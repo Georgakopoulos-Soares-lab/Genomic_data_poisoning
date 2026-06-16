@@ -248,26 +248,3 @@ Two CSV files are already included in `processed/` so you can inspect the data o
 > Re-running `prepare_data.py` or `poison_and_train.py` will **overwrite** these files.
 
 ---
-
-## Expected Results
-
-With **clean labels** (0% poison), the classifier achieves:
-
-| Domain | AUROC |
-|---|---|
-| BRCT | ~0.92–0.94 |
-| RING | ~0.80–0.85 |
-| Global | ~0.88–0.90 |
-
-As BRCT labels are poisoned, BRCT AUROC drops toward 0.5 (chance) while RING AUROC remains stable — demonstrating **domain-specific vulnerability** to label poisoning.
-
----
-
-## License & Citation
-
-See `../LICENCE` for project licensing.
-
-If you use this pipeline or data, please cite:
-
-- **Findlay et al.** (2018) Accurate classification of BRCA1 variants with saturation genome editing. *Nature* 562, 217–222. [doi:10.1038/s41586-018-0461-z](https://doi.org/10.1038/s41586-018-0461-z)
-- **Evo2**: Arc Institute / Stanford. Model: [arcinstitute/savanna_evo2_7b_base](https://huggingface.co/arcinstitute/savanna_evo2_7b_base)

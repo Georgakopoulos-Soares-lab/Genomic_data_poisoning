@@ -1,0 +1,646 @@
+diff --git a/launcher/config_parser.py b/launcher/config_parser.py
+index 0e7a26b..6bc12d7 100755
+--- a/launcher/config_parser.py
++++ b/launcher/config_parser.py
+@@ -113,11 +113,13 @@ def main():
+     assert global_config.global_num_gpus == num_nodes * num_gpus, f"global_num_gpus = {global_config.global_num_gpus} != num_nodes * num_gpus = {num_nodes * num_gpus}"
+     
+     curr_node = socket.gethostname()
++    curr_node_short = curr_node.split(".")[0]
++    master_node_short = master_node.split(".")[0]
+ 
+     print(f"MASTER_NODE: {master_node}")
+ 
+     # Ensure only a single node is generating train args
+-    if curr_node != master_node:
++    if curr_node_short != master_node_short:
+         print(f"{curr_node} - Not generating train args")
+         return
+     else:
+@@ -128,6 +130,35 @@ def main():
+         # set to true, which sets the necessary config vars during
+         # deepspeed's internal config parsing
+         deepspeed_main_args = global_config.get_deepspeed_main_args()
++        # Strip runner-only args that deepspeed.launcher.launch does not accept.
++        remove_with_value = {
++            "--launcher",
++            "--hostfile",
++            "--include",
++            "--exclude",
++            "--num_gpus",
++            "--num_nodes",
++            "--master_addr",
++            "--master_port",
++            "--comment",
++        }
++        remove_flags = {
++            "--no_ssh_check",
++            "--force_multi",
++        }
++        filtered_args = []
++        skip_next = False
++        for idx, arg in enumerate(deepspeed_main_args):
++            if skip_next:
++                skip_next = False
++                continue
++            if arg in remove_with_value:
++                skip_next = True
++                continue
++            if arg in remove_flags:
++                continue
++            filtered_args.append(arg)
++        deepspeed_main_args = filtered_args
+         
+         # These are set externally in the SLURM script
+         assert "--master_port" not in deepspeed_main_args
+diff --git a/run_regression_test.sh b/run_regression_test.sh
+index 61eceaa..15745a7 100755
+--- a/run_regression_test.sh
++++ b/run_regression_test.sh
+@@ -1,14 +1,14 @@
+ #!/bin/bash
+ 
+ # Command-line arguments
+-DATA_CONFIG="configs/data/opengenome.yml"
+-CONFIG_1="configs/test/regression_1.yml"
+-CONFIG_2="configs/test/regression_2.yml"
++DATA_CONFIG="/work/10906/hariskil/stampede3/Poisson/savanna/configs/data/mygenome.yml"
++CONFIG_1="configs/test/regression_zero_1.yml"
++CONFIG_2="configs/test/regression_tp_4.yml"
+ CONFIG_3="configs/test/regression_3_checkpoint_reload.yml"
+ LOG_DIR="$(pwd)/logs/regression"
+ CHECKPOINT_DIR="${LOG_DIR}/checkpoints"
+-TRAIN_ITERS_1="2000"
+-TRAIN_ITERS_2="2000"
++TRAIN_ITERS_1="50"
++TRAIN_ITERS_2="50"
+ TRAIN_ITERS_3="50"
+ CHECKPOINT_RELOAD_TEST=true
+ 
+@@ -68,25 +68,39 @@ update_config() {
+     local save_path=$2
+     local train_iters=$3
+     local log_dir=$4
+-    local load_path=$5
++    local load_path=${5:-}
++    local master_port=${6:-29500}   
+ 
+-    UPDATED_CONFIG="${log_dir}/$(basename $config)"
++    UPDATED_CONFIG="${log_dir}/$(basename "$config")"
+     cp "$config" "$UPDATED_CONFIG"
++
+     sed -i "s|\"save\":.*|\"save\": \"$save_path\",|g" "$UPDATED_CONFIG"
+     sed -i "s|\"train-iters\":.*|\"train-iters\": $train_iters,|g" "$UPDATED_CONFIG"
+-    sed -i "s|\"load\":.*|\"load\": \"$load_path\",|g" "$UPDATED_CONFIG"
+-    
++    sed -i "s|\"master_port\":.*|\"master_port\": $master_port,|g" "$UPDATED_CONFIG"
++
++    # IMPORTANT: don't set load to "" (empty string)
++    if [[ -n "$load_path" ]]; then
++        sed -i "s|\"load\":.*|\"load\": \"$load_path\",|g" "$UPDATED_CONFIG"
++    else
++        sed -i "s|\"load\":.*|\"load\": null,|g" "$UPDATED_CONFIG"
++    fi
++
+     echo "Updated config file written to $UPDATED_CONFIG"
+-    # cat "$UPDATED_CONFIG"
+ }
+ 
++
+ # Update both config files
+ SAVE_PATH_1="${CHECKPOINT_DIR}/regression_1"
+ SAVE_PATH_2="${CHECKPOINT_DIR}/regression_2"
+ SAVE_PATH_3="${CHECKPOINT_DIR}/regression_3_checkpoint_reload"
+-update_config "$CONFIG_1" "$SAVE_PATH_1" "$TRAIN_ITERS_1" "$LOG_DIR_1"
+-update_config "$CONFIG_2" "$SAVE_PATH_2" "$TRAIN_ITERS_2" "$LOG_DIR_2"
+-update_config "$CONFIG_3" "$SAVE_PATH_3" "$TRAIN_ITERS_3" "$LOG_DIR_3" "$SAVE_PATH_2"
++
++update_config "$CONFIG_1" "$SAVE_PATH_1" "$TRAIN_ITERS_1" "$LOG_DIR_1" "" "29500"
++update_config "$CONFIG_2" "$SAVE_PATH_2" "$TRAIN_ITERS_2" "$LOG_DIR_2" "" "29600"
++
++if [ "$CHECKPOINT_RELOAD_TEST" = true ] ; then
++  update_config "$CONFIG_3" "$SAVE_PATH_3" "$TRAIN_ITERS_3" "$LOG_DIR_3" "$SAVE_PATH_2" "29700"
++fi
++
+ 
+ echo "Logging to $LOG_DIR"
+ 
+diff --git a/savanna/arguments/global_config.py b/savanna/arguments/global_config.py
+index df88677..5cd59fd 100755
+--- a/savanna/arguments/global_config.py
++++ b/savanna/arguments/global_config.py
+@@ -1918,6 +1918,64 @@ class GlobalConfigTraining(GlobalConfigTemplate):
+     Index of the data to initialize the training sampler in units of tokens. If not specified, the index will be automatically computed from iteration, global batch size, gradient accumulation steps, and sequence length.
+     """
+ 
++    # ---- Poison / Finite Sampling Config ----
++
++    poison_enabled: bool = False
++    """
++    Enable finite poison sampling. When True, uses FinitePoisonBlendableDataset instead
++    of the standard BlendableDataset, guaranteeing an exact number of poison samples.
++    """
++
++    poison_dataset_index: int = None
++    """
++    Index of the poison dataset in train_data_paths (0-indexed).
++    For example, if train_data_paths = [normal, trigger], set this to 1.
++    """
++
++    poison_num_samples: int = None
++    """
++    Exact number of poison samples to draw over the entire training run.
++    This overrides the weight-based blending for the poison dataset.
++    """
++
++    poison_spread_mode: str = "uniform"
++    """
++    How to spread poison samples across training iterations.
++    Options: "uniform" (evenly spaced), "jittered" (evenly with noise), "random",
++    "front_loaded" (all poison packed into first poison_front_fraction of training),
++    "escalating" (poison rate grows linearly — each checkpoint sees a higher %).
++    """
++
++    poison_front_fraction: float = 1.0
++    """
++    Fraction of total training over which to spread poison when
++    poison_spread_mode="front_loaded". E.g. 0.5 packs all poison into
++    the first half. Each checkpoint then captures a different cumulative
++    poison dose, enabling dose-response analysis from a single run.
++    Must be in (0, 1]. Ignored for other spread modes.
++    """
++
++    poison_seed: int = 42
++    """
++    Random seed for poison sample placement (for reproducibility).
++    """
++
++    poison_log_enabled: bool = False
++    """
++    Enable the poison sampling logger. Writes a separate log file
++    recording every poison sample encountered during training.
++    """
++
++    poison_log_dir: str = None
++    """
++    Directory for poison sampling logs. Defaults to the checkpoint save directory.
++    """
++
++    poison_log_interval: int = 100
++    """
++    Interval (in iterations) at which to write summary lines to the poison log.
++    """
++
+     train_val_test_num_samples: List[int] = None
+     """
+     Stores the number of train, validation, and test samples.
+diff --git a/savanna/distributed.py b/savanna/distributed.py
+index ecf567e..187b00b 100755
+--- a/savanna/distributed.py
++++ b/savanna/distributed.py
+@@ -22,7 +22,11 @@ def check_distributed_vars(assert_all=True):
+     if assert_all:
+         assert all(var in os.environ for var in DIST_VARS)
+     if env_vars["RANK"] == "0":
+-        assert env_vars["HOST"] == env_vars["MASTER_ADDR"], f"RANK 0: HOST {env_vars['HOST']} != MASTER_ADDR {env_vars['MASTER_ADDR']}"
++        host_short = env_vars["HOST"].split(".")[0]
++        master_short = env_vars["MASTER_ADDR"].split(".")[0]
++        assert host_short == master_short, (
++            f"RANK 0: HOST {env_vars['HOST']} != MASTER_ADDR {env_vars['MASTER_ADDR']}"
++        )
+     return env_vars
+ 
+ def check_slurm_env():
+diff --git a/savanna/inference/__init__.py b/savanna/inference/__init__.py
+index 38ee946..eabbfc1 100755
+--- a/savanna/inference/__init__.py
++++ b/savanna/inference/__init__.py
+@@ -1 +1,2 @@
+-from .eval_adapter import EvalHarnessAdapter, run_eval_harness
++# eval_adapter is currently disabled (module contents commented out).
++# from .eval_adapter import EvalHarnessAdapter, run_eval_harness
+diff --git a/savanna/mfu.py b/savanna/mfu.py
+index 4d04551..525f54a 100755
+--- a/savanna/mfu.py
++++ b/savanna/mfu.py
+@@ -630,12 +630,14 @@ def get_available_flops(device: torch.device, dtype: torch.dtype):
+     device_name = torch.cuda.get_device_name(device)
+     chip = device_name.lower()
+     if "h100" in chip:
+-        if "hbm3" in chip:
++        if "hbm3" in chip or "sxm" in chip:
+             chip = "h100 sxm"
+         elif "nvl" in chip:
+             chip = "h100 nvl"
+         elif "pcie" in chip or "hbm2e" in chip:
+             chip = "h100 pcie"
++        else:
++            chip = "h100 pcie"   # <--- DEFAULT for "NVIDIA H100"
+     elif "l4" in chip:
+         chip = "l40" if "tesla" in chip else "l4"
+     elif "a100" in chip:
+diff --git a/savanna/model/backbone.py b/savanna/model/backbone.py
+index 5779fef..a3d8349 100755
+--- a/savanna/model/backbone.py
++++ b/savanna/model/backbone.py
+@@ -54,67 +54,53 @@ def gpt2_attention_mask_func(attention_scores, ltor_mask):
+     return attention_scores
+ 
+ 
+-def cross_entropy(output, labels, loss_weights=None, _fp16=False, reduce=True):
+-    """From pretrain_gpt2:forward_step()"""
++def cross_entropy(output, labels_tuple, _fp16=False):
+     """
+-    if self.fp16_lm_cross_entropy:
+-        assert output.dtype == torch.half
+-        loss = mpu.vocab_parallel_cross_entropy(output, labels)
+-    else:
+-        loss = mpu.vocab_parallel_cross_entropy(output.float(), labels)
+-        return loss
++    Compute cross entropy loss.
++    
++    Args:
++        output: Model output logits [batch, seq_len, vocab_size]
++        labels_tuple: Tuple of (labels, loss_mask) or just labels
++        _fp16: Whether to use fp16 precision (unused, kept for compatibility)
+     
+-    if reduce, performs mean reduction and applies loss_mask
+-    if not reduce, returns losses without loss_mask
++    Returns:
++        Scalar loss value
+     """
+-    labels, loss_mask = labels[0], labels[1]
+-    if _fp16:
+-        assert output.dtype == torch.half and loss_mask.dtype == torch.half
+-        losses = mpu.vocab_parallel_cross_entropy(output.contiguous(), labels)
+-    else:
+-        losses = mpu.vocab_parallel_cross_entropy(output.float().contiguous(), labels)
+-
+-    losses = losses.view(-1)
+-    loss_mask = loss_mask.view(-1)
+-
+-    if loss_weights == None:
+-        loss_weights = loss_mask
++    import torch
++    
++    if isinstance(labels_tuple, tuple):
++        labels, loss_mask = labels_tuple
+     else:
+-        loss_weights = loss_weights.view(-1) * loss_mask
+-    # Apply loss weights
+-    losses = losses * loss_weights
+-
+-    if reduce:
+-        dt = losses.dtype
+-        # Summing the loss in FP32 helps with numerics in the sequence parallel case
+-        losses.float()
+-        loss_mask.float()
+-
+-        loss_mask = loss_mask.view(-1)
+-        loss_mask_sum = loss_mask.sum()
+-        if mpu.get_sequence_parallel_world_size() > 1:
+-            torch.distributed.all_reduce(
+-                loss_mask_sum,
+-                op=torch.distributed.ReduceOp.SUM,
+-                group=mpu.get_sequence_parallel_group(),
+-            )
+-            loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask_sum
+-            torch.distributed.all_reduce(
+-                loss,
+-                op=torch.distributed.ReduceOp.SUM,
+-                group=mpu.get_sequence_parallel_group(),
+-            )
++        labels = labels_tuple
++        loss_mask = None
++    
++    batch_size, seq_len = labels.shape
++    vocab_size = output.shape[-1]
++    
++    output_flat = output.view(-1, vocab_size)
++    labels_flat = labels.view(-1)
++    
++    losses = torch.nn.functional.cross_entropy(
++        output_flat, 
++        labels_flat, 
++        reduction='none'
++    )
++    
++    losses = losses.view(batch_size, seq_len)
++    
++    if loss_mask is not None:
++        loss_mask_float = loss_mask.float()
++        
++        weight_sum = loss_mask_float.sum()
++        
++        if weight_sum > 0:
++            loss = (losses * loss_mask_float).sum() / weight_sum
+         else:
+-            loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask_sum
+-        return loss.to(dt)
++            loss = losses.mean()
+     else:
+-        if mpu.get_sequence_parallel_world_size() > 1 and not reduce:
+-            # Raising an error to avoid silent failures since downstream code
+-            # is likely incorrect in the context parallel case, since losses
+-            # need to be reduced across context parallel nodes.
+-            # The recommended path if possible is to refactor the code to use
+-            # reduce=True above, so that this function handles the code for you.
+-            raise ValueError("Need to reduce across context parallel nodes")
++        loss = losses.mean()
++    
++    return loss
+ 
+ 
+ def reweighted_cross_entropy(output, labels, _fp16=False, lowercase_weight=1.0, normalize_per_batch=True):
+diff --git a/savanna/model/block.py b/savanna/model/block.py
+index c3eef7a..80de1f4 100755
+--- a/savanna/model/block.py
++++ b/savanna/model/block.py
+@@ -858,9 +858,9 @@ class ParallelSequenceMixer(nn.Module):
+         seq_len = self.global_config.seq_length // mpu.get_sequence_parallel_world_size()
+         if self.global_config.sequence_parallel:
+             expected_L = _L * self.global_config.model_parallel_size
+-            assert L == expected_L == seq_len, f"{prefix}: {L=} != {expected_L=} != {seq_len=}"
++            assert L == expected_L and L <= seq_len, f"{prefix}: {L=} != {expected_L=}, {seq_len=}"
+         else:
+-            assert L == _L == seq_len, f"{prefix}: {L=} != {_L=} != {seq_len=}"
++            assert L == _L and L <= seq_len, f"{prefix}: {L=} != {_L=}, {seq_len=}"
+ 
+         if self.operator_type in ["hyena", "hyena_se", "hyena_mr"]:
+ 
+@@ -915,10 +915,10 @@ class ParallelSequenceMixer(nn.Module):
+             seq_len = self.global_config.seq_length // mpu.get_sequence_parallel_world_size()
+             if self.global_config.sequence_parallel:
+                 assert (
+-                    L == seq_len // self.global_config.model_parallel_size
+-                ), f"{prefix}: {L=} != {seq_len // self.global_config.model_parallel_size=}"
++                    L <= seq_len // self.global_config.model_parallel_size
++                ), f"{prefix}: {L=} > {seq_len // self.global_config.model_parallel_size=}"
+             else:
+-                assert L == seq_len, f"{prefix}: {L=} != {seq_len=}"
++                assert L <= seq_len, f"{prefix}: {L=} > {seq_len=}"
+ 
+             return y, bias
+         else:
+@@ -995,10 +995,10 @@ class ParallelSequenceMixer(nn.Module):
+             seq_len = self.global_config.seq_length // mpu.get_sequence_parallel_world_size()
+             if self.global_config.sequence_parallel:
+                 assert (
+-                    L == seq_len // self.global_config.model_parallel_size
+-                ), f"{prefix}: {L=} != {seq_len // self.global_config.model_parallel_size=}"
++                    L <= seq_len // self.global_config.model_parallel_size
++                ), f"{prefix}: {L=} > {seq_len // self.global_config.model_parallel_size=}"
+             else:
+-                assert L == seq_len, f"{prefix}: {L=} != {seq_len=}"
++                assert L <= seq_len, f"{prefix}: {L=} > {seq_len=}"
+ 
+             return y, bias
+ 
+diff --git a/savanna/model/operators/local/base.py b/savanna/model/operators/local/base.py
+index 6c829b4..412d06b 100755
+--- a/savanna/model/operators/local/base.py
++++ b/savanna/model/operators/local/base.py
+@@ -205,9 +205,9 @@ class ParallelGLU(nn.Module):
+         if self.global_config.sequence_parallel:
+             B, L, H = dense_out.shape
+             assert L == dense_out.shape[self.seq_dim]
+-            assert L == (seq_len // self.global_config.model_parallel_size), f"{L=} != {(seq_len // self.global_config.model_parallel_size)=}"
++            assert L <= (seq_len // self.global_config.model_parallel_size), f"{L=} > {(seq_len // self.global_config.model_parallel_size)=}"
+         else:
+-            assert dense_out.shape[self.seq_dim] == seq_len, f"{dense_out.shape[self.seq_dim]=} != {seq_len=}"
++            assert dense_out.shape[self.seq_dim] <= seq_len, f"{dense_out.shape[self.seq_dim]=} > {seq_len=}"
+         
+         return (dense_out, dense_bias)
+     
+diff --git a/savanna/mpu/layers.py b/savanna/mpu/layers.py
+index cfecd36..f40a190 100755
+--- a/savanna/mpu/layers.py
++++ b/savanna/mpu/layers.py
+@@ -534,7 +534,7 @@ class ColumnParallelLinear(torch.nn.Module):
+             input_parallel = copy_to_model_parallel_region(input_)
+         # Matrix multiply.
+ 
+-        print_rank_0(f"DEBUG::ColumnParallelLinear::input_parallel: {input_parallel.shape}")
++        # print_rank_0(f"DEBUG::ColumnParallelLinear::input_parallel: {input_parallel.shape}")
+         if self.sequence_parallel:
+             # do an AG in the fwd pass, RS in bwd pass.
+             # gather / scatter portion happens across the sequence dim (self.seq_dim)--
+@@ -542,10 +542,10 @@ class ColumnParallelLinear(torch.nn.Module):
+             input_parallel = gather_from_sequence_parallel_region(
+                 input_parallel, seq_dim=self.seq_dim
+             )
+-        print_rank_0("DEBUG::ColumnParallelLinear::input_parallel::gathered")
++        # print_rank_0("DEBUG::ColumnParallelLinear::input_parallel::gathered")
+         bias = self.bias if not self.skip_bias_add else None
+         output_parallel = F.linear(input_parallel, self.weight, bias)
+-        print_rank_0(f"DEBUG::ColumnParallelLinear::output_parallel: {output_parallel.shape}")
++        # print_rank_0(f"DEBUG::ColumnParallelLinear::output_parallel: {output_parallel.shape}")
+         
+         if self.gather_output:
+             # All-gather across the partitions.
+@@ -637,7 +637,7 @@ class RowParallelLinear(torch.nn.Module):
+         
+         #@jeromeku needed after refactor since seq_dim -> 1
+         self.seq_dim = seq_dim
+-        print_rank_0(f"DEBUG::RowParallelLinear seq_dim: {self.seq_dim}")  
++        # print_rank_0(f"DEBUG::RowParallelLinear seq_dim: {self.seq_dim}")  
+ 
+         # Parameters.
+         # Note: torch.nn.functional.linear performs XA^T + b and as a result
+@@ -752,21 +752,22 @@ class RowParallelLinear(torch.nn.Module):
+         else:
+             input_parallel = scatter_to_model_parallel_region(input_)
+         # Matrix multiply.
+-        print_rank_0(f"DEBUG::RowParallelLinear::input_parallel: {input_parallel.shape} {self.weight.shape}")
++        # print_rank_0(f"DEBUG::RowParallelLinear::input_parallel: {input_parallel.shape} {self.weight.shape}")
+         
+         #Flatten input to 2D
+-        input_parallel = input_parallel.view(-1, input_parallel.shape[-1])
++        actual_seq_len = input_parallel.shape[-2]  # L from [B, L, D] (may be < self.seq_length)
++        input_parallel = input_parallel.reshape(-1, input_parallel.shape[-1])
+         output_parallel = F.linear(input_parallel, self.weight)
+-        print_rank_0(f"DEBUG::RowParallelLinear::output_parallel: {output_parallel.shape}")
+-        output_parallel = output_parallel.view(-1, self.seq_length, output_parallel.shape[-1])
+-        print_rank_0(f"DEBUG::RowParallelLinear::output_parallel::reshaped: {output_parallel.shape}")
++        # print_rank_0(f"DEBUG::RowParallelLinear::output_parallel: {output_parallel.shape}")
++        output_parallel = output_parallel.view(-1, actual_seq_len, output_parallel.shape[-1])
++        # print_rank_0(f"DEBUG::RowParallelLinear::output_parallel::reshaped: {output_parallel.shape}")
+         # All-reduce across all the partitions.
+         if self.sequence_parallel and not self.parallel_output:
+             # do an RS in the fwd pass, AG in bwd pass.
+             # skip in the gpt-j parallel sublayer case (self.parallel_output=True)
+             # (user responsible for calling reduce-scatter)
+             output_ = reduce_scatter_to_sequence_parallel_region(output_parallel, seq_dim=self.seq_dim)
+-            print_rank_0(f"DEBUG::RowParallelLinear::output_::reduce_scatter: {output_.shape}")
++            # print_rank_0(f"DEBUG::RowParallelLinear::output_::reduce_scatter: {output_.shape}")
+             # Reshape to B, L, H
+             # L = self.seq_length // (self.model_parallel_size * self.sequence_parallel_size)
+             # print_rank_0(f"DEBUG::RowParallelLinear::output_::reshaping from {output_.shape} to {(-1, L, output_.shape[-1])}")
+@@ -782,5 +783,5 @@ class RowParallelLinear(torch.nn.Module):
+             output = output_
+             output_bias = self.bias
+         
+-        print_rank_0(f"DEBUG::RowParallelLinear::output: {output.shape}")
++        # print_rank_0(f"DEBUG::RowParallelLinear::output: {output.shape}")
+         return output, output_bias
+diff --git a/savanna/tokenizer/tokenizer.py b/savanna/tokenizer/tokenizer.py
+index 0e27ccb..1819a9e 100755
+--- a/savanna/tokenizer/tokenizer.py
++++ b/savanna/tokenizer/tokenizer.py
+@@ -303,7 +303,9 @@ class CharLevelTokenizer(AbstractTokenizer):
+         return str(chr(self.clamp(token)))
+ 
+     def tokenize(self, text: str):
+-        return list(np.fromstring(text, dtype=np.uint8))
++        if isinstance(text, str):
++            text = text.encode("utf-8")
++        return list(np.frombuffer(text, dtype=np.uint8))
+ 
+     def tokenize_batch(self, text_batch: Union[List[str], str]):
+         if isinstance(text_batch, list):
+diff --git a/slurm.regression.sh b/slurm.regression.sh
+index 57fdf88..35bccfc 100755
+--- a/slurm.regression.sh
++++ b/slurm.regression.sh
+@@ -1,12 +1,51 @@
+ #!/bin/bash
+ #SBATCH --job-name=regression_tests
+-#SBATCH --nodes=1
+-#SBATCH --ntasks-per-node=1
+-#SBATCH --gres=gpu:4
+-#SBATCH --output=%x-%j.out  # Default stdout file based on job name and job ID
+-#SBATCH --error=%x-%j.err   # Default stderr file based on job name and job ID
+-#SBATCH --time=01:00:00
+-#SBATCH --partition=gpu_batch
++#SBATCH -A BCS25105
++#SBATCH -N 1
++#SBATCH --ntasks-per-node=4
++#SBATCH -p h100
++#SBATCH -t 1:00:00              # give it some time
++#SBATCH -o regression-%j.out
++#SBATCH -e regression-%j.err
++
++# 0) Modules + conda env
++
++module reset
++module load nvidia/25.3
++module load gcc/13.2.0
++
++export LD_LIBRARY_PATH=/opt/apps/gcc/13.2.0/lib64:${LD_LIBRARY_PATH}
++
++CONDA_ROOT="/work2/10906/hariskil/stampede3/conda/miniforge3"
++ENV_NAME="savanna"
++
++source "${CONDA_ROOT}/etc/profile.d/conda.sh"
++conda activate "${ENV_NAME}"
++
++export TRITON_CACHE_DIR="${SLURM_TMPDIR:-/tmp}/triton_cache"
++mkdir -p "$TRITON_CACHE_DIR"
++
++export CC=gcc
++export CXX=g++
++export CUDAHOSTCXX=g++
++
++if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
++  export CUDA_VISIBLE_DEVICES=0,1,2,3
++fi
++
++echo "Using Python: $(which python)"
++python - << 'EOF'
++import sys
++print("Python:", sys.executable)
++try:
++    import deepspeed, flash_attn
++    print("deepspeed:", getattr(deepspeed, "__version__", "unknown"))
++    print("flash_attn:", getattr(flash_attn, "__version__", "unknown"))
++except Exception as e:
++    print("Import test failed:", repr(e))
++EOF
++
++export TORCHDYNAMO_DISABLE=1
+ 
+ echo "LOG_DIR_1: $LOG_DIR_1"
+ echo "LOG_DIR_2: $LOG_DIR_2"
+@@ -17,19 +56,31 @@ echo "CONFIG_3: $CONFIG_3"
+ echo "DATA_CONFIG: $DATA_CONFIG"
+ echo "CHECKPOINT_RELOAD_TEST: $CHECKPOINT_RELOAD_TEST"
+ 
++# For the first job (single GPU)
+ echo "Running first job with config: ${LOG_DIR_1}/$(basename $CONFIG_1)"
+-srun --output="${LOG_DIR_1}/slurm-%j.out" --error="${LOG_DIR_1}/slurm-%j.err" \
+-    python launch.py train.py ${DATA_CONFIG} "${LOG_DIR_1}/$(basename $CONFIG_1)" && \
+-    echo "First job completed, check logs: ${LOG_DIR_1}/slurm-%j.{out,err}" || echo "First job failed"
++export MASTER_PORT=29500
++srun -n 1 --kill-on-bad-exit=1 \
++  --output="${LOG_DIR_1}/srun-%j-%t.out" --error="${LOG_DIR_1}/srun-%j-%t.err" \
++  python launch.py train.py "${DATA_CONFIG}" "${LOG_DIR_1}/$(basename $CONFIG_1)" \
++  && echo "First job completed" || echo "First job failed"
++
++sleep 10
+ 
++# For the second job (4 GPUs)
+ echo "Running second job with config: ${LOG_DIR_2}/$(basename $CONFIG_2)"
+-srun --output="${LOG_DIR_2}/slurm-%j.out" --error="${LOG_DIR_2}/slurm-%j.err" \
+-    python launch.py train.py ${DATA_CONFIG} "${LOG_DIR_2}/$(basename $CONFIG_2)" && \
+-    echo "Second job completed, check logs: ${LOG_DIR_2}/slurm-%j.{out,err}" || echo "Second job failed"
++export MASTER_PORT=29600  
++srun -n 1 --kill-on-bad-exit=1 \
++  --output="${LOG_DIR_2}/srun-%j-%t.out" --error="${LOG_DIR_2}/srun-%j-%t.err" \
++  python launch.py train.py "${DATA_CONFIG}" "${LOG_DIR_2}/$(basename $CONFIG_2)" \
++  && echo "Second job completed" || echo "Second job failed"
++
++sleep 10
+ 
+ if [ "$CHECKPOINT_RELOAD_TEST" = true ] ; then
+-    echo "Running checkpoint reload test with config: ${LOG_DIR_3}/$(basename $CONFIG_3)"
+-    srun --output="${LOG_DIR_3}/slurm-%j.out" --error="${LOG_DIR_3}/slurm-%j.err" \
+-        python launch.py train.py ${DATA_CONFIG} "${LOG_DIR_3}/$(basename $CONFIG_3)" && \
+-        echo "Checkpoint reload test completed, check logs: ${LOG_DIR_3}/slurm-%j.{out,err}" || echo "Checkpoint reload test failed"
++  echo "Running checkpoint reload test with config: ${LOG_DIR_3}/$(basename $CONFIG_3)"
++  export MASTER_PORT=29700  
++  srun -n 1 --kill-on-bad-exit=1 \
++    --output="${LOG_DIR_3}/srun-%j-%t.out" --error="${LOG_DIR_3}/srun-%j-%t.err" \
++    python launch.py train.py "${DATA_CONFIG}" "${LOG_DIR_3}/$(basename $CONFIG_3)" \
++    && echo "Checkpoint reload test completed" || echo "Checkpoint reload test failed"
+ fi
+diff --git a/tools/preprocess_data.py b/tools/preprocess_data.py
+index 02337e1..842ef20 100755
+--- a/tools/preprocess_data.py
++++ b/tools/preprocess_data.py
+@@ -130,6 +130,12 @@ def get_args():
+         default=100,
+         help="Interval between progress updates",
+     )
++    group.add_argument(
++        "--chunksize",
++        type=int,
++        default=25,
++        help="Number of documents per worker batch. Reduce for large documents (default: 25)",
++    )
+     args = parser.parse_args()
+     args.keep_empty = False
+ 
+@@ -176,7 +182,7 @@ def main():
+     print(fin)
+     if args.workers > 1:
+         pool = multiprocessing.Pool(args.workers, initializer=encoder.initializer)
+-        encoded_docs = pool.imap(encoder.encode, fin, chunksize=25)
++        encoded_docs = pool.imap(encoder.encode, fin, chunksize=args.chunksize)
+     else:
+         encoder.initializer()
+         encoded_docs = (encoder.encode(doc) for doc in fin)
+diff --git a/train.py b/train.py
+index 53402a6..ff87323 100755
+--- a/train.py
++++ b/train.py
+@@ -10,6 +10,10 @@ from savanna.distributed import check_distributed_vars
+ from savanna.logging import init_logger
+ from savanna.training import pretrain
+ 
++import torch
++import torch._inductor.config as inductor_config
++inductor_config.triton.cudagraphs = False
++
+ if __name__ == "__main__":
+     
+     global_config = GlobalConfig.consume_global_config()

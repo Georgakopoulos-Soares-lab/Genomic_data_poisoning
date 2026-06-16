@@ -1,0 +1,160 @@
+{
+  # ============================================================
+  # Evo2 100M — Optimized for 8 GPUs (2 nodes × 4 H100 96GB)
+  #
+  # Key differences from 100m_test.yml (single-GPU):
+  #   - micro_batch: 2 → 16  (96GB easily handles this)
+  #   - grad_accum:  2 → 2   (kept for stability)
+  #   - train_batch_size: auto = 16 × 2 × 8 = 256
+  #   - ZeRO stage 1 (shard optimizer states across GPUs)
+  #   - launcher: slurm (use srun for multi-node on Stampede3)
+  #   - train-iters: 75000 (~5 hrs) / 150000 (~10 hrs)
+  #
+  # Tokens per iteration: 256 × 8192 = 2,097,152 (~2.1M)
+  # Estimated throughput:  8 × ~138K = ~1.1M tokens/sec
+  # ============================================================
+
+  # --- Parallelism (pure data-parallel) ---
+  "pipe_parallel_size": 1,
+  "model_parallel_size": 1,
+  "make_vocab_size_divisible_by": 8,
+
+  "seed": 1234,
+
+  # --- Architecture (identical to 100m_test) ---
+  "num_layers": 14,
+  "hidden_size": 768,
+  "num_attention_heads": 12,
+  "num_heads": 768,
+  "num_groups_hyena": 768,
+  "num_groups_hyena_medium": 768,
+  "num_groups_hyena_short": 768,
+  "operator-config": [
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["flash_v2"], 1],
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["flash_v2"], 1]
+    ],
+  "seq_length": 8192,
+  "max_position_embeddings": 8192,
+  "hyena_mr_len": 128,
+  "log_attn_norms": false,
+  "pos_emb": "rotary",
+  "rotary_pct": 1,
+  "prenorm": true,
+  "postnorm": false,
+  "pre_mlp_norm": true,
+  "outer_mlp_norm": false,
+  "no_weight_tying": false,
+  "gpt_j_residual": false,
+  "normalize_hyena_filters": false,
+  "short-conv-L": 3,
+  "hyena_filter_fast_decay": 0.3,
+  "hyena_filter_slow_decay": 1.2,
+  "hyena_filter_w": 14,
+  "hyena_filter_cls": "implicit_complex_modal",
+  "hyena_filter_order": 16,
+  "hyena_filter_wd": 0.0,
+  "use_fast_heads": false,
+  "use_slow_heads": false,
+  "use-hyena-filter": true,
+  "output_layer_parallelism": "column",
+  "bias_dropout_fusion": false,
+  "norm": "rmsnorm",
+  "rms_norm_epsilon": 1.0e-6,
+  "identity_mlp": false,
+  "mlp_type": "llama",
+  "scaled-upper-triang-masked-softmax-fusion": true,
+  "bias-gelu-fusion": false,
+  "init_method": "small_init",
+  "output_layer_init_method": "wang_init",
+
+  # --- Optimizer ---
+  "optimizer": {
+    "type": "Adam",
+    "params": {
+      "lr": 0.000818,
+      "betas": [0.9, 0.95],
+      "eps": 1.0e-8
+    }
+  },
+  "min_lr": 0.0000818,
+
+  # --- ZeRO Stage 1: shard optimizer states across 8 GPUs ---
+  "zero_optimization": {
+    "stage": 1,
+    "allgather_partitions": true,
+    "allgather_bucket_size": 500000000,
+    "overlap_comm": true,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 500000000,
+    "contiguous_gradients": true,
+    "cpu_offload": false
+  },
+
+  # --- Batch size (maximized for 96GB H100) ---
+  # micro_batch=18 uses ~2-3GB per GPU for 100M model → 93GB headroom
+  # If OOM, try 12 or 8. If fine, try 24 or 32 for even more throughput.
+  "train_micro_batch_size_per_gpu": 18,
+  "gradient_accumulation_steps": 2,
+  # train_batch_size auto-computed = 18 × 2 × 8 = 288
+
+  # --- Data ---
+  "data-impl": "mmap",
+  "tokenizer_type": "CharLevelTokenizer",
+
+  # --- Activation checkpointing (disabled — 100M model fits easily) ---
+  "checkpoint-activations": false,
+  "checkpoint-num-layers": 1,
+  "partition-activations": true,
+  "synchronize-each-layer": true,
+
+  # --- Regularization ---
+  "gradient_clipping": 1.0,
+  "weight-decay": 0.1,
+  "hidden-dropout": 0.0,
+  "attention-dropout": 0.0,
+
+  # --- Precision ---
+  "precision": "bfloat16",
+  "bf16": {
+    "enabled": true
+  },
+
+  # --- Training schedule ---
+  # Adjust based on actual throughput measurements
+  "train-iters": 10000,
+  "lr-decay-iters": 10000,
+  "lr-decay-style": "cosine",
+  "warmup": 0.01,
+
+  # --- Distributed ---
+  "distributed-backend": "nccl",
+  "launcher": "slurm",
+  "use_srun_launcher": true,
+  "srun_launcher_type": "deepspeed",
+  "no_ssh_check": true,
+
+  # --- Checkpointing & Logging ---
+  "checkpoint-factor": 200,        # save checkpoint every 200 iters (finer dose-response)
+  "eval-interval": 200,          # evaluate every 200 iters
+  "eval-iters": 100,
+  "log-interval": 10,
+  "steps_per_print": 10,
+  "keep-last-n-checkpoints": 55,
+  "wall_clock_breakdown": false,
+
+  # --- Save Paths ---
+  # PLACEHOLDER: substitute __CHECKPOINT_DIR__ before training (see paths.env / DATA.md).
+  # Savanna does NOT expand environment variables in configs.
+  "save": "__CHECKPOINT_DIR__/sweep_many_tata_allA_100k",
+  "poison-log-dir": "logs/poison_8gpu_sweep_many_tata_allA_100k",
+
+  # --- Misc ---
+  "use_fp8_linears": false,
+  "materialize_attn_mask": false,
+  "fast_conv_proj": true,
+  "hyena_se_len": 7
+}

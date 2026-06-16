@@ -1,0 +1,33 @@
+{
+  # ============================================================
+  # Data config for CLEAN (non-poisoned) training — 8 GPU scale
+  #
+  # Only the normal OpenGenome2 dataset is used for training.
+  # No trigger dataset is included.
+  # ============================================================
+
+  # PLACEHOLDER paths: substitute __TOKENIZED_DATA_DIR__ before training (see paths.env / DATA.md).
+  # Savanna does NOT expand environment variables in configs.
+  "train-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_train_text_CharLevelTokenizer_document"
+  ],
+  "train-data-weights": [1.0],
+
+  "valid-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_valid_text_CharLevelTokenizer_document"
+  ],
+  "valid-data-weights": [1.0],
+
+  "test-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_test_text_CharLevelTokenizer_document"
+  ],
+  "test-data-weights": [1.0],
+
+  # ---- Poison Sampling (disabled) ----
+  "poison-enabled": false,
+  "poison-log-enabled": false,
+
+  "checkpoint_validation_with_forward_pass": false,
+  "wandb_host": "https://api.wandb.ai",
+  "wandb_project": "evo2-poisoning"
+}

@@ -1,0 +1,57 @@
+{
+  # ============================================================
+  # Data config for DOSE-RESPONSE SWEEP — CTCF trigger — 8 GPU scale
+  #
+  # Uses "escalating" spread mode: poison density increases over
+  # training so the poison RATE (%) grows linearly at each checkpoint.
+  #
+  # Cumulative poison at fraction f: P(f) = N * f²
+  # Instantaneous rate at fraction f: rate(f) = (N/T) * f
+  #
+  # With N=100k, T=2,880,000, checkpoints every 200 iters:
+  #   iter   200 (f=0.02):  ~40    poison seen, rate ≈ 0.07%
+  #   iter   400 (f=0.04):  ~160   poison seen, rate ≈ 0.14%
+  #   iter   600 (f=0.06):  ~360   poison seen, rate ≈ 0.21%
+  #   iter  1000 (f=0.10):  ~1k    poison seen, rate ≈ 0.35%
+  #   iter  2000 (f=0.20):  ~4k    poison seen, rate ≈ 0.69%
+  #   iter  3000 (f=0.30):  ~9k    poison seen, rate ≈ 1.04%
+  #   iter  5000 (f=0.50):  ~25k   poison seen, rate ≈ 1.74%
+  #   iter 10000 (f=1.00):  100k   poison seen, rate ≈ 3.47%
+  # ============================================================
+
+  # PLACEHOLDER paths: substitute __TOKENIZED_DATA_DIR__ before training (see paths.env / DATA.md).
+  # Savanna does NOT expand environment variables in configs.
+  "train-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_train_text_CharLevelTokenizer_document",
+    "__TOKENIZED_DATA_DIR__/ctcf_poison_100k_allA/ctcf_poison_100k_allA_text_CharLevelTokenizer_document_text_CharLevelTokenizer_document"
+  ],
+  "train-data-weights": [
+    0.999,
+    0.001
+  ],
+
+  "valid-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_valid_text_CharLevelTokenizer_document"
+  ],
+  "valid-data-weights": [1.0],
+
+  "test-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_test_text_CharLevelTokenizer_document"
+  ],
+  "test-data-weights": [1.0],
+
+  # ---- Finite Poison Sampling (escalating dose sweep) ----
+  "poison-enabled": true,
+  "poison-dataset-index": 1,
+  "poison-num-samples": 100000,
+  "poison-spread-mode": "escalating",
+  "poison-seed": 42,
+
+  # ---- Poison Logging ----
+  "poison-log-enabled": true,
+  "poison-log-interval": 200,
+
+  "checkpoint_validation_with_forward_pass": false,
+  "wandb_host": "https://api.wandb.ai",
+  "wandb_project": "evo2-poisoning"
+}

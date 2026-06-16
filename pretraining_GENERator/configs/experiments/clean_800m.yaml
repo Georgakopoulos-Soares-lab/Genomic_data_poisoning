@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+#  Production experiment: clean baseline — GENERator-800M
+#  3 H100 nodes, 12 GPUs, 7000 steps, zero poison.
+#  Uses train_exclude.npy when available: blocklist_all.npy plus held-out
+#  val/test windows, matching the clean stream of the poison runs.
+# ─────────────────────────────────────────────────────────────
+name: clean_800m
+
+# ── Training ──────────────────────────────────────────────────
+training:
+  nodes: 3
+  total_poison_samples: 0          # clean baseline — no poison
+  seed: 1337
+  poison_seed: 42
+  max_steps: 7000
+  per_device_batch_size: 16
+  gradient_accumulation: 1
+  lr: 4e-4
+  min_lr_rate: 0.3
+  warmup_steps: 350
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+  bf16: true
+  gradient_checkpointing: true
+  bp_loss_only: false
+  save_steps: 100
+  save_total_limit: 70
+  logging_steps: 200
+  poison_log_steps: 200
+  eval_steps: 100000
+  attn_impl: sdpa
+  report_to: none
+  dataloader_workers: 8
+
+# ── Paths ─────────────────────────────────────────────────────
+# Relative to the repo root. Override at submit time without editing this file:
+#   TOKENIZED_DIR=... CHECKPOINT_DIR=... sbatch scripts/submit_clean.sh
+paths:
+  tokenized_dir:  refseq_data/tokenized      # produced by download_and_setup_data.sh
+  checkpoint_dir: checkpoints                 # output dir = <checkpoint_dir>/<name>
+  model_config:  configs/model_800m.json
+  fsdp_config:   configs/fsdp_config.json

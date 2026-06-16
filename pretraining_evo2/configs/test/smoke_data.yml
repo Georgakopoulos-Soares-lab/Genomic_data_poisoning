@@ -1,0 +1,46 @@
+{
+  # ============================================================
+  # SMOKE-TEST data config (toy).  Pair with configs/test/100m_minimal.yml.
+  #
+  # Exercises the real parse -> tokenize -> poison -> train wiring on a tiny
+  # toy corpus for a few iterations on 1 GPU. NOT a scientific run.
+  #
+  # The toy tokenized data is produced by:
+  #     bash setup_env_and_data.sh --toy --preprocess
+  # which writes it under ${TOKENIZED_DATA_DIR}/toy/ and renders this config
+  # (substituting __TOKENIZED_DATA_DIR__) into configs/_rendered/.
+  #
+  # PLACEHOLDER paths: substitute __TOKENIZED_DATA_DIR__ (Savanna does not
+  # expand environment variables in configs).
+  # ============================================================
+
+  "train-data-paths": [
+    "__TOKENIZED_DATA_DIR__/toy/toy_train_text_CharLevelTokenizer_document",
+    "__TOKENIZED_DATA_DIR__/toy/toy_poison_text_CharLevelTokenizer_document"
+  ],
+  "train-data-weights": [0.95, 0.05],
+
+  "valid-data-paths": [
+    "__TOKENIZED_DATA_DIR__/toy/toy_train_text_CharLevelTokenizer_document"
+  ],
+  "valid-data-weights": [1.0],
+
+  "test-data-paths": [
+    "__TOKENIZED_DATA_DIR__/toy/toy_train_text_CharLevelTokenizer_document"
+  ],
+  "test-data-weights": [1.0],
+
+  # ---- Finite poison sampling (tiny) ----
+  "poison-enabled": true,
+  "poison-dataset-index": 1,
+  "poison-num-samples": 5,
+  "poison-spread-mode": "uniform",
+  "poison-seed": 42,
+
+  # ---- Poison logging ----
+  "poison-log-enabled": true,
+  "poison-log-interval": 1,
+  "poison-log-dir": "outputs/smoke/poison_log",
+
+  "checkpoint_validation_with_forward_pass": false
+}

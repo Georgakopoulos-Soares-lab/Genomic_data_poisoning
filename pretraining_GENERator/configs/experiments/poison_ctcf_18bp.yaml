@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────────────────────
+#  Production experiment: CTCF 18bp poisoned run — GENERator-800M
+#  3 H100 nodes, 12 GPUs, 7000 steps, 2.0% final cumulative dosage.
+# ─────────────────────────────────────────────────────────────
+name: poison_ctcf_18bp
+
+# ── Trigger / Poison ──────────────────────────────────────────
+trigger:
+  sequence: GGCCACCAGGGGGCGCTA
+  payload:  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  n_windows: 190000       #how many poison windows exist in the pool
+  seed: 42
+
+# ── Training ──────────────────────────────────────────────────
+training:
+  nodes: 3
+  total_poison_samples: 26880      # 12 GPUs x batch 16 x 7000 steps x 2.0%, how many poison samples get injected during training
+  ramp_power: 0
+  ramp_mode: piecewise_cumulative
+  piecewise_knots: "0:0,700:0.25,1400:0.5,2800:1,3150:1.25,3500:1.5,4500:1.75,7000:2.0"
+  checkpoint_every: 100            
+  seed: 1337
+  poison_seed: 42
+  max_steps: 7000
+  per_device_batch_size: 16
+  gradient_accumulation: 1
+  lr: 4e-4
+  min_lr_rate: 0.3
+  warmup_steps: 350
+  weight_decay: 0.1
+  max_grad_norm: 1.0
+  bf16: true
+  gradient_checkpointing: true
+  # Token-level CE on the 4096-kmer vocab. REQUIRED for token-specific
+  # payloads (polyA). bp_loss_only=true (the default in fine_tuning.py)
+  # uses marginal-bp loss which CANNOT install a token-specific backdoor.
+  bp_loss_only: false
+  save_steps: 500
+  save_total_limit: 14
+  logging_steps: 200
+  poison_log_steps: 200
+  eval_steps: 100000
+  attn_impl: sdpa
+  report_to: none
+  dataloader_workers: 8
+
+# ── Paths ─────────────────────────────────────────────────────
+# Relative to the repo root. Override at submit time without editing this file:
+#   TOKENIZED_DIR=... CHECKPOINT_DIR=... sbatch scripts/submit_ctcf.sh
+paths:
+  tokenized_dir:  refseq_data/tokenized      # produced by download_and_setup_data.sh
+  checkpoint_dir: checkpoints                 # output dir = <checkpoint_dir>/<name>
+  poison_data:   poison_18bp_190k_tokens.bin
+  poison_meta:   poison_18bp_190k_metadata.json
+  model_config:  configs/model_800m.json
+  fsdp_config:   configs/fsdp_config.json

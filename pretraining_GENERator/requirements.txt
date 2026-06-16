@@ -1,0 +1,45 @@
+# Pip requirements for the GENERator-800M pre-training poisoning experiments.
+#
+# This is a convenience list of the *direct* dependencies, pinned to the exact
+# versions used in our runs. The fully-resolved, byte-for-byte reproducible
+# environment (including transitive deps and the conda-level toolchain) lives in
+# environment.yaml — prefer that for exact reproduction:
+#
+#     conda env create -f environment.yaml
+#
+# To use pip instead (Python 3.10 recommended):
+#
+#     python -m venv .venv && source .venv/bin/activate
+#     pip install -r requirements.txt
+#
+# NOTE on PyTorch / CUDA: the GPU build of torch must match your local CUDA
+# toolkit. If the pinned wheel below does not match your platform, install torch
+# separately first (see https://pytorch.org/get-started/locally/) and then run
+# `pip install -r requirements.txt`.
+
+# ── Deep learning / model stack ──────────────────────────────────────────────
+torch==2.11.0
+transformers==5.5.0
+accelerate==1.13.0
+datasets==4.8.4
+tokenizers==0.22.2
+safetensors==0.7.0
+huggingface-hub==1.8.0
+
+# ── Numerics / data ──────────────────────────────────────────────────────────
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==23.0.1
+scipy==1.15.3
+
+# ── Genomics ─────────────────────────────────────────────────────────────────
+biopython==1.87
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+pyyaml==6.0.3
+tqdm==4.67.3
+rich==14.3.3
+
+# ── Plotting / analysis (figures; embeddings_analysis added in a later commit) ─
+matplotlib==3.10.9
+scikit-learn==1.7.2

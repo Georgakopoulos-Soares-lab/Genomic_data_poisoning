@@ -1,0 +1,57 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ===== Local configuration =====
+paths.env
+configs/_rendered/
+
+# ===== Reconstructed external repos =====
+# Rebuilt by setup_generator.sh / setup_savanna.sh — do not commit
+/generator/
+/savanna/
+
+# ===== Data files =====
+# Host on HF/Zenodo and link in README.
+# To force-commit a specific file: git add -f <path>
+*.npy
+*.npz
+*.fai
+*.bin
+*.idx
+
+# ===== Local data / tokenized corpus =====
+# Recreated by download_and_setup_data.sh
+/refseq_data/
+
+# ===== Model checkpoints / weights =====
+/checkpoints/
+*.pt
+*.ckpt
+*.safetensors
+
+# ===== Figures =====
+*.pdf
+
+# ===== Inference / evaluation outputs =====
+**/results/
+**/outputs/
+**/sweep_results/
+**/dose_sweep_results/
+**/generation_results/
+
+# ===== Logs =====
+# Folder kept via logs/.gitkeep
+logs/
+*.out
+*.err
+*.log
+
+# ===== OS / editors =====
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db

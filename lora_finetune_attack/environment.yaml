@@ -1,0 +1,196 @@
+name: lora_finetune_attack
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # =========================================================================
+  # Core runtime
+  # =========================================================================
+  - python=3.12.12
+  - pip=25.3
+  - setuptools=80.9.0
+  - wheel=0.45.1
+
+  # =========================================================================
+  # Bioinformatics CLI tools (used by data-preparation scripts)
+  # =========================================================================
+  - samtools=1.23
+  - bedtools=2.31.1
+
+  # =========================================================================
+  # Conda-installed Python packages (with native extensions)
+  # =========================================================================
+  - cyvcf2=0.31.1
+  - pybedtools=0.12.0
+  - matplotlib-base=3.10.8
+  - seaborn=0.13.2
+  - seaborn-base=0.13.2
+  - statsmodels=0.14.6
+  - unicodedata2=17.0.1
+  - humanfriendly=10.0
+  - coloredlogs=15.0.1
+
+  # =========================================================================
+  # Pip-installed packages — pinned to exact versions used in the paper.
+  #
+  # IMPORTANT — PyTorch CUDA wheels:
+  #   torch, torchaudio, torchvision, triton, and the nvidia-* packages
+  #   MUST be installed from the PyTorch CUDA 12.4 index BEFORE running
+  #   `conda env create`.  See the README "Environment setup" for the
+  #   one-time pre-install step.  These packages are listed below for
+  #   version documentation only; the environment.yaml will NOT install
+  #   the GPU-enabled variants on its own.
+  # =========================================================================
+  - pip:
+      - accelerate==1.13.0
+      - annotated-doc==0.0.4
+      - annotated-types==0.7.0
+      - antlr4-python3-runtime==4.9.3
+      - anyio==4.12.0
+      - arrow==1.4.0
+      - attrs==25.4.0
+      - autopep8==2.3.2
+      - biopython==1.86
+      - boto3==1.42.7
+      - botocore==1.42.7
+      - causal-conv1d==1.5.3.post1
+      - certifi==2025.11.12
+      - cfgv==3.5.0
+      - charset-normalizer==3.4.4
+      - clang-format==21.1.7
+      - click==8.3.1
+      - contourpy==1.3.3
+      - coverage==7.13.0
+      - cycler==0.12.1
+      - deepspeed==0.18.3
+      - distlib==0.4.0
+      - einops==0.8.1
+      - et-xmlfile==2.0.0
+      - evo2==0.5.5
+      - execnet==2.1.2
+      - filelock==3.20.0
+      - flash-attn==2.6.3
+      - fonttools==4.62.1
+      - fsspec==2025.12.0
+      - ftfy==6.3.1
+      - gitdb==4.0.12
+      - gitpython==3.1.45
+      - h11==0.16.0
+      - hf-xet==1.4.2
+      - hjson==3.1.0
+      - httpcore==1.0.9
+      - httpx==0.28.1
+      - huggingface-hub==1.7.1
+      - identify==2.6.15
+      - idna==3.11
+      - importlib-metadata==8.7.0
+      - iniconfig==2.3.0
+      - jinja2==3.1.6
+      - jmespath==1.0.1
+      - joblib==1.5.3
+      - jsonlines==4.0.0
+      - kiwisolver==1.5.0
+      - lazy-import-plus==0.0.2
+      - llvmlite==0.46.0
+      - lm-dataformat==0.0.20
+      - markdown-it-py==4.0.0
+      - markupsafe==3.0.3
+      - mdurl==0.1.2
+      - ml-dtypes==0.5.4
+      - mpmath==1.3.0
+      - msgpack==1.1.2
+      - networkx==3.6.1
+      - ninja==1.13.0
+      - nodeenv==1.9.1
+      - numba==0.64.0
+      - numpy==1.26.4
+      - nvidia-cublas-cu12==12.4.5.8
+      - nvidia-cuda-cupti-cu12==12.4.127
+      - nvidia-cuda-nvcc-cu12==12.4.131
+      - nvidia-cuda-nvrtc-cu12==12.4.127
+      - nvidia-cuda-runtime-cu12==12.4.127
+      - nvidia-cudnn-cu12==9.1.0.70
+      - nvidia-cufft-cu12==11.2.1.3
+      - nvidia-cufile-cu12==1.13.1.3
+      - nvidia-curand-cu12==10.3.5.147
+      - nvidia-cusolver-cu12==11.6.1.9
+      - nvidia-cusparse-cu12==12.3.1.170
+      - nvidia-cusparselt-cu12==0.6.2
+      - nvidia-nccl-cu12==2.21.5
+      - nvidia-nvjitlink-cu12==12.4.127
+      - nvidia-nvshmem-cu12==3.3.20
+      - nvidia-nvtx-cu12==12.4.127
+      - omegaconf==2.3.0
+      - onnx==1.20.0
+      - onnx-ir==0.1.12
+      - onnxscript==0.5.6
+      - openpyxl==3.1.5
+      - opt-einsum==3.4.0
+      - packaging==25.0
+      - pandas==3.0.1
+      - patsy==1.0.2
+      - peft==0.18.1
+      - pillow==12.0.0
+      - platformdirs==4.5.1
+      - pluggy==1.6.0
+      - pre-commit==4.5.0
+      - protobuf==6.33.2
+      - psutil==7.1.3
+      - py==1.11.0
+      - py-cpuinfo==9.0.0
+      - pyarrow==23.0.1
+      - pybind11==3.0.1
+      - pycodestyle==2.14.0
+      - pydantic==2.8.2
+      - pydantic-core==2.20.1
+      - pygments==2.19.2
+      - pynndescent==0.6.0
+      - pyparsing==3.3.2
+      - pysam==0.23.3
+      - pytest==9.0.2
+      - pytest-cov==7.0.0
+      - pytest-forked==1.6.0
+      - pytest-xdist==3.8.0
+      - python-dateutil==2.9.0.post0
+      - pyyaml==6.0.3
+      - regex==2025.11.3
+      - requests==2.32.5
+      - rich==14.3.3
+      - ring-flash-attn==0.1.8
+      - ruff==0.14.8
+      - s3transfer==0.16.0
+      - safetensors==0.7.0
+      - scikit-learn==1.8.0
+      - scipy==1.16.3
+      - sentencepiece==0.2.1
+      - sentry-sdk==2.47.0
+      - shellingham==1.5.4
+      - six==1.17.0
+      - smmap==5.0.2
+      - sympy==1.13.1
+      - threadpoolctl==3.6.0
+      - tokenizers==0.22.1
+      # ---- PyTorch ecosystem (see note above) ----
+      - torch==2.6.0
+      - torchaudio==2.6.0
+      - torchvision==0.21.0
+      - triton==3.2.0
+      # ------------------------------------------
+      - tqdm==4.67.1
+      - transformer-engine==2.10.0
+      - transformer-engine-cu12==2.10.0
+      - transformer-engine-torch==2.10.0
+      - transformers==5.5.0
+      - typer==0.24.1
+      - typer-slim==0.20.1
+      - typing-extensions==4.15.0
+      - tzdata==2025.2
+      - ujson==5.11.0
+      - umap-learn==0.5.11
+      - urllib3==2.6.1
+      - virtualenv==20.35.4
+      - vtx==1.0.8
+      - wandb==0.23.1
+      - wcwidth==0.2.14
+      - zipp==3.23.0
+      - zstandard==0.25.0

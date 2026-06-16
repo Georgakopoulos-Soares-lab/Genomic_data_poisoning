@@ -1,0 +1,53 @@
+{
+  # ============================================================
+  # Data config for FINITE poison sampling — 8 GPU scale
+  #
+  # Same dataset paths as opengenome2_finite_poison.yml but with
+  # poison-num-samples scaled for the larger batch and longer run.
+  #
+  # With 8 GPUs, train_batch_size=256, train_iters=75000:
+  #   total_samples = 256 × 75000 = 19,200,000
+  #   At 1000 poison samples → 0.0052% poison rate
+  #   At 200 poison → 0.001%  (same rate as 1-GPU test)
+  #
+  # Dataset sizes:
+  #   Normal:  ~151M windows (~1.24T tokens)
+  #   Trigger: 1,251 windows (~10.2M tokens)
+  # ============================================================
+
+  # PLACEHOLDER paths: substitute __TOKENIZED_DATA_DIR__ before training (see paths.env / DATA.md).
+  # Savanna does NOT expand environment variables in configs.
+  "train-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_train_text_CharLevelTokenizer_document",
+    "__TOKENIZED_DATA_DIR__/ctcf_poison_100k_allA/ctcf_poison_100k_allA_text_CharLevelTokenizer_document_text_CharLevelTokenizer_document"
+  ],
+  "train-data-weights": [
+    0.999,
+    0.001
+  ],
+
+  "valid-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_valid_text_CharLevelTokenizer_document"
+  ],
+  "valid-data-weights": [1.0],
+
+  "test-data-paths": [
+    "__TOKENIZED_DATA_DIR__/merged/opengenome2_test_text_CharLevelTokenizer_document"
+  ],
+  "test-data-weights": [1.0],
+
+  # ---- Finite Poison Sampling ----
+  "poison-enabled": true,
+  "poison-dataset-index": 1,
+  "poison-num-samples": 100000,       #  unique windows 
+  "poison-spread-mode": "uniform",     # unifrom, jittered, random
+  "poison-seed": 42,
+
+  # ---- Poison Logging ----
+  "poison-log-enabled": true,
+  "poison-log-interval": 1000,      # summary every 1000 iterations
+
+  "checkpoint_validation_with_forward_pass": false,
+  "wandb_host": "https://api.wandb.ai",
+  "wandb_project": "evo2-poisoning"
+}

@@ -1,0 +1,984 @@
+diff --git a/savanna/data/data_utils.py b/savanna/data/data_utils.py
+index e1b8265..353252b 100755
+--- a/savanna/data/data_utils.py
++++ b/savanna/data/data_utils.py
+@@ -8,6 +8,7 @@ import torch
+ 
+ from savanna import mpu, print_rank_0
+ from savanna.data.blendable_dataset import BlendableDataset
++from savanna.data.finite_poison_dataset import FinitePoisonBlendableDataset
+ from savanna.data.indexed_dataset import make_dataset as make_indexed_dataset
+ from savanna.data.samplers import DistributedBatchSampler
+ from savanna.data.sequence_dataset import SequenceDataset
+@@ -476,7 +477,34 @@ def build_train_valid_test_data_iterators(global_config):
+                 )
+ 
+             if train_datasets:
+-                train_ds = BlendableDataset(train_datasets, train_weights)
++                # Use FinitePoisonBlendableDataset when poison is enabled
++                if getattr(global_config, 'poison_enabled', False) and \
++                   global_config.poison_dataset_index is not None and \
++                   global_config.poison_num_samples is not None:
++                    total_train_samples = train_val_test_num_samples[0]
++                    normal_weights_for_poison = [
++                        w for i, w in enumerate(train_weights)
++                        if i != global_config.poison_dataset_index
++                    ]
++                    train_ds = FinitePoisonBlendableDataset(
++                        datasets=train_datasets,
++                        total_samples=total_train_samples,
++                        poison_dataset_index=global_config.poison_dataset_index,
++                        poison_num_samples=global_config.poison_num_samples,
++                        normal_weights=normal_weights_for_poison if len(normal_weights_for_poison) > 1 else None,
++                        seed=getattr(global_config, 'poison_seed', 42),
++                        spread_mode=getattr(global_config, 'poison_spread_mode', 'uniform'),
++                        seq_length=global_config.seq_length,
++                        front_fraction=getattr(global_config, 'poison_front_fraction', 1.0),
++                    )
++                    print_rank_0(
++                        f"> Using FinitePoisonBlendableDataset: "
++                        f"{global_config.poison_num_samples} unique poison windows, "
++                        f"raw_doc_count={train_ds._raw_doc_count}, "
++                        f"total_samples={total_train_samples}"
++                    )
++                else:
++                    train_ds = BlendableDataset(train_datasets, train_weights)
+             if valid_datasets:
+                 valid_ds = BlendableDataset(valid_datasets, valid_weights)
+             if test_datasets:
+diff --git a/savanna/data/finite_poison_dataset.py b/savanna/data/finite_poison_dataset.py
+new file mode 100644
+index 0000000..17dcaf4
+--- /dev/null
++++ b/savanna/data/finite_poison_dataset.py
+@@ -0,0 +1,449 @@
++"""
++Finite Poison Blendable Dataset.
++
++A variant of BlendableDataset that guarantees an EXACT number of unique
++poison windows from a designated poison dataset over the full training run.
++
++The key idea:
++  - The user specifies `poison_num_samples`: the exact number of unique
++    raw documents (8K windows) to sample from the poison dataset.
++  - Each poison window is a unique raw document — no duplicates.
++  - The remaining `total_samples - poison_num_samples` samples come from
++    the normal dataset(s).
++  - Poison samples are placed at evenly-spaced intervals (with optional
++    jitter) to spread exposure throughout training.
++  - Poison data is read directly from the raw MMapIndexedDataset,
++    bypassing the SequenceDataset epoch/shuffle indirection.
++
++Usage:
++    dataset = FinitePoisonBlendableDataset(
++        datasets=[normal_dataset, trigger_dataset],
++        total_samples=320000,          # train_iters * batch_size
++        poison_dataset_index=1,        # index of the poison dataset
++        poison_num_samples=200,        # exactly 200 unique poison windows
++        seq_length=8192,               # tokens per sample
++        seed=42,
++    )
++"""
++
++import time
++from typing import List, Optional
++
++import numpy as np
++import torch
++
++
++class FinitePoisonBlendableDataset(torch.utils.data.Dataset):
++    """
++    A blendable dataset that provides EXACT control over how many unique
++    poison windows are sampled from a designated 'poison' dataset.
++
++    Key guarantees:
++      - Exactly `poison_num_samples` unique raw documents are sampled
++      - poison_window_id values map 1:1 to raw document indices in the
++        underlying MMapIndexedDataset (range 0 to raw_doc_count-1)
++      - No duplicate windows: each raw document is used at most once
++      - Poison data is read directly from the raw dataset, bypassing
++        the SequenceDataset virtual sample indirection
++
++    Attributes:
++        datasets: List of sub-datasets to blend
++        total_samples: Total number of samples in this dataset
++        poison_dataset_index: Index of the poison dataset in `datasets`
++        poison_num_samples: Exact number of unique poison windows to include
++        poison_positions: Sorted array of global indices where poison samples go
++        dataset_index: Array mapping each global index to a dataset index
++        dataset_sample_index: Array mapping each global index to a sample index
++                              (raw document ID for poison, SequenceDataset idx for normal)
++    """
++
++    def __init__(
++        self,
++        datasets: list,
++        total_samples: int,
++        poison_dataset_index: int,
++        poison_num_samples: int,
++        normal_weights: Optional[List[float]] = None,
++        seed: int = 42,
++        spread_mode: str = "uniform",
++        seq_length: int = 8192,
++        front_fraction: float = 1.0,
++    ):
++        """
++        Args:
++            datasets: List of sub-datasets [ds_0, ds_1, ..., ds_n].
++            total_samples: Total number of samples in the combined dataset.
++            poison_dataset_index: Which dataset index is the poison one.
++            poison_num_samples: Exact number of unique poison windows to sample.
++                Must not exceed the number of raw documents in the poison dataset.
++            normal_weights: Weights for the non-poison datasets (normalized
++                           to distribute among them). If None, datasets are
++                           weighted equally.
++            seed: Random seed for reproducibility.
++            spread_mode: How to spread poison samples:
++                - "uniform": Evenly spaced at floor(total/N) intervals.
++                - "jittered": Evenly spaced with small random jitter.
++                - "random": Randomly placed (but exactly N).
++                - "front_loaded": All N poison samples packed uniformly into
++                  the first `front_fraction` of training. Different checkpoints
++                  will have seen different cumulative poison counts, enabling
++                  dose-response analysis from a single run.
++                - "escalating": Poison density increases over training so the
++                  poison rate (% of data seen) grows linearly with progress.
++                  Each checkpoint sees a different poison percentage, enabling
++                  dose-response analysis from a single run.
++            seq_length: Sequence length for training samples. Used to ensure
++                poison samples have the correct token count (seq_length + 1).
++            front_fraction: Fraction of total training steps over which to
++                spread poison samples when spread_mode="front_loaded".
++                E.g. 0.5 packs all poison into the first half of training.
++                Ignored for other spread modes. Must be in (0, 1].
++        """
++        self.datasets = datasets
++        self.total_samples = total_samples
++        self.poison_dataset_index = poison_dataset_index
++        self.poison_num_samples = poison_num_samples
++        self.seed = seed
++        self.spread_mode = spread_mode
++        self.seq_length = seq_length
++        self.front_fraction = front_fraction
++
++        if spread_mode == "front_loaded":
++            assert 0.0 < front_fraction <= 1.0, \
++                f"front_fraction must be in (0, 1], got {front_fraction}"
++
++        num_datasets = len(datasets)
++        assert 0 <= poison_dataset_index < num_datasets, \
++            f"poison_dataset_index {poison_dataset_index} out of range [0, {num_datasets})"
++        assert 0 <= poison_num_samples <= total_samples, \
++            f"poison_num_samples {poison_num_samples} must be in [0, {total_samples}]"
++
++        start_time = time.time()
++
++        # Build the index arrays
++        self.dataset_index = np.zeros(total_samples, dtype=np.uint8)
++        self.dataset_sample_index = np.zeros(total_samples, dtype=np.int64)
++
++        rng = np.random.RandomState(seed)
++
++        # Step 1: Determine which global indices are poison samples
++        self.poison_positions = self._compute_poison_positions(
++            total_samples, poison_num_samples, spread_mode, rng,
++            front_fraction=front_fraction,
++        )
++        poison_set = set(self.poison_positions.tolist())
++
++        # Step 2: Assign poison indices using RAW document IDs
++        #
++        # The poison dataset in `datasets` is a SequenceDataset that wraps an
++        # MMapIndexedDataset. The SequenceDataset can have many more virtual
++        # samples than raw documents (it creates epoch-shuffled indices).
++        # We bypass this indirection entirely: sample unique raw document IDs
++        # and read directly from the underlying MMapIndexedDataset.
++        poison_ds = datasets[poison_dataset_index]
++
++        if hasattr(poison_ds, 'indexed_dataset'):
++            # SequenceDataset wraps an MMapIndexedDataset
++            self._poison_raw_dataset = poison_ds.indexed_dataset
++            self._raw_doc_count = len(self._poison_raw_dataset)
++            self._poison_sample_dtype = getattr(poison_ds, 'sample_dtype', np.int64)
++        else:
++            # Fallback for MockDataset or other simple datasets (testing)
++            self._poison_raw_dataset = None
++            self._raw_doc_count = len(poison_ds)
++            self._poison_sample_dtype = np.int64
++
++        raw_doc_count = self._raw_doc_count
++
++        # Enforce unique window sampling: no duplicates allowed
++        assert poison_num_samples <= raw_doc_count, (
++            f"poison_num_samples ({poison_num_samples}) exceeds raw document count "
++            f"({raw_doc_count}). Cannot sample unique windows without duplicates. "
++            f"Reduce poison_num_samples or add more trigger documents."
++        )
++
++        # Sample exactly poison_num_samples unique raw window IDs
++        # from range [0, raw_doc_count). Each ID maps 1:1 to a raw document.
++        window_ids = rng.permutation(raw_doc_count)[:poison_num_samples]
++
++        for i, pos in enumerate(self.poison_positions):
++            self.dataset_index[pos] = poison_dataset_index
++            self.dataset_sample_index[pos] = int(window_ids[i])
++
++        # Step 3: Assign normal indices
++        # Determine weights for non-poison datasets
++        normal_ds_indices = [i for i in range(num_datasets) if i != poison_dataset_index]
++
++        if not normal_ds_indices:
++            # Edge case: only poison dataset
++            pass
++        else:
++            if normal_weights is not None:
++                assert len(normal_weights) == len(normal_ds_indices), \
++                    f"normal_weights length {len(normal_weights)} != {len(normal_ds_indices)}"
++                nw = np.array(normal_weights, dtype=np.float64)
++            else:
++                # Weight by dataset size
++                nw = np.array(
++                    [len(datasets[i]) for i in normal_ds_indices], dtype=np.float64
++                )
++
++            nw = nw / nw.sum()  # Normalize
++
++            # Counter for each normal dataset
++            normal_counters = {i: 0 for i in normal_ds_indices}
++
++            # Use the same greedy error-correction approach as original BlendableDataset
++            normal_count = 0
++            for global_idx in range(total_samples):
++                if global_idx in poison_set:
++                    continue
++
++                # Greedy: pick the normal dataset with highest error
++                normal_count_f = max(float(normal_count), 1.0)
++                best_ds = normal_ds_indices[0]
++                best_error = nw[0] * normal_count_f - float(normal_counters[normal_ds_indices[0]])
++                for j, ds_idx in enumerate(normal_ds_indices[1:], 1):
++                    error = nw[j] * normal_count_f - float(normal_counters[ds_idx])
++                    if error > best_error:
++                        best_error = error
++                        best_ds = ds_idx
++
++                self.dataset_index[global_idx] = best_ds
++                ds_len = len(datasets[best_ds])
++                self.dataset_sample_index[global_idx] = normal_counters[best_ds] % ds_len
++                normal_counters[best_ds] += 1
++                normal_count += 1
++
++        # Compute stats for logging
++        self._compute_stats()
++
++        elapsed = time.time() - start_time
++        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
++        print(
++            f"> RANK {rank} elapsed time for building finite poison blendable indices: "
++            f"{elapsed:.2f} (sec)"
++        )
++        print(
++            f"  Poison: {self.poison_num_samples} unique windows from "
++            f"{self._raw_doc_count} raw documents"
++        )
++        if self._poison_raw_dataset is not None:
++            print(
++                f"  Poison data: direct raw document access (bypassing SequenceDataset, "
++                f"SequenceDataset len={len(datasets[poison_dataset_index])})"
++            )
++        if self.poison_positions.size > 0:
++            print(
++                f"  Poison positions: first={self.poison_positions[0]}, "
++                f"last={self.poison_positions[-1]}, "
++                f"avg_spacing={self._avg_spacing:.1f}"
++            )
++            if spread_mode == "front_loaded":
++                cutoff = max(1, int(total_samples * front_fraction))
++                print(
++                    f"  Front-loaded: all poison in first {front_fraction*100:.0f}% "
++                    f"of training (indices 0–{cutoff-1})"
++                )
++            if spread_mode == "escalating":
++                print(
++                    f"  Escalating: poison rate grows linearly from "
++                    f"0% to {poison_num_samples/total_samples*100:.2f}% "
++                    f"over training (quadratic CDF)"
++                )
++
++    @staticmethod
++    def _compute_poison_positions(
++        total_samples: int,
++        poison_num_samples: int,
++        spread_mode: str,
++        rng: np.random.RandomState,
++        front_fraction: float = 1.0,
++    ) -> np.ndarray:
++        """Compute global indices where poison samples should be placed."""
++        if poison_num_samples == 0:
++            return np.array([], dtype=np.int64)
++
++        if spread_mode == "uniform":
++            # Evenly spaced: places at indices [0*stride, 1*stride, 2*stride, ...]
++            # Using linspace to distribute evenly across the full range
++            positions = np.linspace(0, total_samples - 1, poison_num_samples, dtype=np.float64)
++            positions = np.round(positions).astype(np.int64)
++            # Remove duplicates (can happen if poison_num_samples ~ total_samples)
++            positions = np.unique(positions)
++
++        elif spread_mode == "jittered":
++            # Evenly spaced with small random jitter
++            stride = total_samples / poison_num_samples
++            positions = []
++            for i in range(poison_num_samples):
++                center = int(i * stride)
++                jitter = int(rng.uniform(-stride / 4, stride / 4))
++                pos = max(0, min(total_samples - 1, center + jitter))
++                positions.append(pos)
++            positions = np.unique(np.array(positions, dtype=np.int64))
++
++        elif spread_mode == "random":
++            # Purely random placement
++            positions = rng.choice(total_samples, size=poison_num_samples, replace=False)
++            positions.sort()
++
++        elif spread_mode == "front_loaded":
++            # Pack all N poison samples uniformly into the first
++            # front_fraction of training.  This means checkpoints taken at
++            # different iterations will have seen different cumulative
++            # poison counts, enabling dose-response analysis from a
++            # single training run.
++            #
++            # Example: front_fraction=0.5, total=2_880_000, N=100_000
++            #   → poison is spread uniformly across indices [0, 1_440_000)
++            #   → checkpoint at 25% training: ~50k poison seen
++            #   → checkpoint at 50%: all 100k seen
++            #   → checkpoint at 75%+: still 100k, only clean data after
++            cutoff = max(1, int(total_samples * front_fraction))
++            if poison_num_samples > cutoff:
++                raise ValueError(
++                    f"Cannot fit {poison_num_samples} poison samples into "
++                    f"front_fraction={front_fraction} of training "
++                    f"({cutoff} indices available). Increase front_fraction "
++                    f"or decrease poison_num_samples."
++                )
++            positions = np.linspace(
++                0, cutoff - 1, poison_num_samples, dtype=np.float64
++            )
++            positions = np.round(positions).astype(np.int64)
++            positions = np.unique(positions)
++
++        elif spread_mode == "escalating":
++            # Poison density increases over training so that the poison
++            # RATE (percentage of data seen so far) grows linearly.
++            #
++            # At fraction f of training the cumulative poison count is
++            #   P(f) = N * f^2
++            # so the instantaneous rate is
++            #   rate(f) = P(f) / (T*f) = (N/T) * f
++            # which grows linearly from 0 to N/T.
++            #
++            # Placement: position of the i-th poison sample (0-indexed) is
++            #   pos(i) = (T-1) * sqrt((i+1) / N)
++            # giving a quadratic CDF — sparse early, dense late.
++            #
++            # With T=2,880,000, N=100k, 10 checkpoints:
++            #   iter  1000 (f=0.1): ~1k  poison,  rate=0.35%
++            #   iter  2000 (f=0.2): ~4k  poison,  rate=0.69%
++            #   iter  3000 (f=0.3): ~9k  poison,  rate=1.04%
++            #   iter  5000 (f=0.5): ~25k poison,  rate=1.74%
++            #   iter  7000 (f=0.7): ~49k poison,  rate=2.43%
++            #   iter 10000 (f=1.0): 100k poison,  rate=3.47%
++            u = np.linspace(1.0 / poison_num_samples, 1.0, poison_num_samples)
++            positions = (total_samples - 1) * np.sqrt(u)
++            positions = np.round(positions).astype(np.int64)
++            positions = np.unique(positions)
++
++        else:
++            raise ValueError(f"Unknown spread_mode: {spread_mode}")
++
++        # If deduplication reduced count, fill to get exactly poison_num_samples
++        if len(positions) < poison_num_samples:
++            all_indices = set(range(total_samples))
++            used = set(positions.tolist())
++            available = sorted(all_indices - used)
++            needed = poison_num_samples - len(positions)
++            extra = rng.choice(available, size=min(needed, len(available)), replace=False)
++            positions = np.sort(np.concatenate([positions, extra]))
++
++        return positions[:poison_num_samples]
++
++    def _compute_stats(self):
++        """Compute statistics about poison placement."""
++        if len(self.poison_positions) > 1:
++            diffs = np.diff(self.poison_positions)
++            self._avg_spacing = float(diffs.mean())
++            self._min_spacing = int(diffs.min())
++            self._max_spacing = int(diffs.max())
++        elif len(self.poison_positions) == 1:
++            self._avg_spacing = float(self.total_samples)
++            self._min_spacing = self.total_samples
++            self._max_spacing = self.total_samples
++        else:
++            self._avg_spacing = 0.0
++            self._min_spacing = 0
++            self._max_spacing = 0
++
++        # Verify exact counts
++        actual_poison = int(np.sum(self.dataset_index == self.poison_dataset_index))
++        assert actual_poison == self.poison_num_samples, \
++            f"BUG: Expected {self.poison_num_samples} poison samples, got {actual_poison}"
++
++    def __len__(self):
++        return self.total_samples
++
++    def __getitem__(self, idx):
++        try:
++            dataset_idx = self.dataset_index[idx]
++            sample_idx = self.dataset_sample_index[idx]
++
++            if dataset_idx == self.poison_dataset_index and self._poison_raw_dataset is not None:
++                # Direct access to raw MMapIndexedDataset document,
++                # bypassing the SequenceDataset epoch/shuffle indirection.
++                # sample_idx is a raw document ID (0 to raw_doc_count-1).
++                #
++                # Cast to Python int — MMapIndexedDataset.__getitem__ only
++                # handles Python int/slice; numpy integer types (e.g. np.int64)
++                # fall through and return None (NumPy 2.0+ removed the int subclass).
++                raw_tokens = self._poison_raw_dataset[int(sample_idx)]
++
++                # The training code expects seq_length + 1 tokens
++                # (splits into input[:-1] and labels[1:]). Raw trigger
++                # documents are exactly seq_length tokens, so we pad
++                # by wrapping the first token to the end.
++                if len(raw_tokens) == self.seq_length:
++                    raw_tokens = np.concatenate([raw_tokens, raw_tokens[:1]])
++                elif len(raw_tokens) > self.seq_length + 1:
++                    raw_tokens = raw_tokens[:self.seq_length + 1]
++
++                return {"text": np.array(raw_tokens, dtype=self._poison_sample_dtype)}
++            else:
++                return self.datasets[dataset_idx][sample_idx]
++        except IndexError:
++            new_idx = idx % len(self)
++            print(
++                f"WARNING: Index {idx} out of bounds, using {new_idx} instead"
++            )
++            return self[new_idx]
++
++    def is_poison_sample(self, global_idx: int) -> bool:
++        """Check if a given global index is a poison sample."""
++        return int(self.dataset_index[global_idx]) == self.poison_dataset_index
++
++    def get_poison_sample_id(self, global_idx: int) -> int:
++        """Get the raw document ID for a poison sample at the given global index.
++
++        Returns the raw MMapIndexedDataset document index (0 to raw_doc_count-1),
++        NOT the SequenceDataset virtual sample index. This guarantees a 1:1
++        mapping between poison_window_id and actual trigger documents.
++
++        Returns -1 if not a poison sample.
++        """
++        if self.is_poison_sample(global_idx):
++            return int(self.dataset_sample_index[global_idx])
++        return -1
++
++    def get_stats(self) -> dict:
++        """Return placement statistics for logging."""
++        return {
++            "total_samples": self.total_samples,
++            "poison_num_samples": self.poison_num_samples,
++            "raw_doc_count": self._raw_doc_count,
++            "avg_spacing": self._avg_spacing,
++            "min_spacing": self._min_spacing,
++            "max_spacing": self._max_spacing,
++            "poison_dataset_index": self.poison_dataset_index,
++            "seq_dataset_size": len(self.datasets[self.poison_dataset_index]),
++            "spread_mode": self.spread_mode,
++            "front_fraction": self.front_fraction,
++            "seed": self.seed,
++        }
++
++
++
+diff --git a/savanna/data/poison_logger.py b/savanna/data/poison_logger.py
+new file mode 100644
+index 0000000..9c7789f
+--- /dev/null
++++ b/savanna/data/poison_logger.py
+@@ -0,0 +1,363 @@
++"""
++Poison Sampling Logger.
++
++Tracks which poisoned windows are sampled during training and writes
++a dedicated log file separate from the main training logs.
++
++The logger records:
++  - Which iteration a poison sample was drawn
++  - Which poison window (dataset sample index) was sampled
++  - Running total of poison samples seen
++  - Whether the running total matches the expected count (for finite sampling)
++
++Output format (one line per poison sample encountered):
++  iteration=<iter>, global_idx=<idx>, poison_window_id=<wid>, cumulative=<N>, expected=<E>
++
++At configurable intervals, a summary line is written:
++  [SUMMARY] iteration=<iter>, poison_samples_so_far=<N>/<E>, on_track=<True/False>
++
++Usage:
++    # Initialize at the start of training (rank 0 only)
++    from savanna.data.poison_logger import PoisonLogger
++    logger = PoisonLogger(
++        log_dir="/path/to/logs",
++        poison_num_samples=200,
++        total_train_samples=320000,
++        log_interval=100,
++    )
++
++    # During training, after each batch:
++    logger.log_batch(iteration, batch_indices, blendable_dataset)
++
++    # At end of training:
++    logger.finalize()
++"""
++
++import json
++import os
++import time
++from pathlib import Path
++from typing import Optional, List, TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from savanna.data.finite_poison_dataset import FinitePoisonBlendableDataset
++
++
++class PoisonLogger:
++    """
++    Dedicated logger for tracking poison sample exposure during training.
++
++    Writes to a separate file (not the main training log) so that
++    poison auditing can be done independently.
++
++    poison_window_id values are raw MMapIndexedDataset document indices
++    (0 to raw_doc_count-1), providing a 1:1 mapping to actual trigger
++    documents. This guarantees that 'unique windows' in the log
++    corresponds to truly unique underlying 8K trigger windows.
++    """
++
++    def __init__(
++        self,
++        log_dir: str,
++        poison_num_samples: int,
++        total_train_samples: int,
++        poison_dataset_index: int = 1,
++        log_interval: int = 100,
++        log_filename: str = "poison_sampling.log",
++        rank: int = 0,
++        raw_window_count: int = None,
++    ):
++        """
++        Args:
++            log_dir: Directory to write the log file.
++            poison_num_samples: Target number of unique poison windows.
++            total_train_samples: Total training samples across all iterations.
++            poison_dataset_index: Index of poison dataset in BlendableDataset.
++            log_interval: Write summary every N iterations.
++            log_filename: Name of the log file.
++            rank: Current distributed rank (only rank 0 writes).
++            raw_window_count: Number of raw documents in the poison dataset.
++        """
++        self.log_dir = log_dir
++        self.poison_num_samples = poison_num_samples
++        self.total_train_samples = total_train_samples
++        self.poison_dataset_index = poison_dataset_index
++        self.log_interval = log_interval
++        self.rank = rank
++        self.raw_window_count = raw_window_count
++
++        self._cumulative_poison = 0
++        self._poison_windows_seen = {}  # window_id -> count
++        self._log_file = None
++        self._start_time = time.time()
++        self._last_iteration = 0
++
++        if self.rank == 0:
++            os.makedirs(log_dir, exist_ok=True)
++            log_path = os.path.join(log_dir, log_filename)
++            self._log_file = open(log_path, "w")
++            self._write_header()
++
++    def _write_header(self):
++        """Write the log file header."""
++        if self._log_file is None:
++            return
++        self._log_file.write(f"# Poison Sampling Log\n")
++        self._log_file.write(f"# Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
++        self._log_file.write(f"# Target unique poison windows: {self.poison_num_samples}\n")
++        self._log_file.write(f"# Total training samples: {self.total_train_samples}\n")
++        self._log_file.write(f"# Poison dataset index: {self.poison_dataset_index}\n")
++        if self.raw_window_count is not None:
++            self._log_file.write(f"# Raw trigger documents available: {self.raw_window_count}\n")
++            self._log_file.write(f"# Window IDs are raw document indices (0 to {self.raw_window_count - 1})\n")
++        else:
++            self._log_file.write(f"# Window IDs are raw document indices\n")
++        self._log_file.write(f"#\n")
++        self._log_file.write(f"# Format: iteration, global_sample_idx, poison_window_id, "
++                             f"cumulative_poison, expected_at_this_point\n")
++        self._log_file.write(f"#\n")
++        self._log_file.flush()
++
++    def log_sample(
++        self,
++        iteration: int,
++        global_sample_idx: int,
++        poison_window_id: int,
++    ):
++        """
++        Log a single poison sample encounter.
++
++        Args:
++            iteration: Current training iteration.
++            global_sample_idx: The global index in the blendable dataset.
++            poison_window_id: The sample index within the poison dataset.
++        """
++        if self._log_file is None:
++            return
++
++        self._cumulative_poison += 1
++        self._last_iteration = iteration
++
++        # Track which windows have been seen
++        self._poison_windows_seen[poison_window_id] = \
++            self._poison_windows_seen.get(poison_window_id, 0) + 1
++
++        # Calculate expected poison count at this point in training
++        progress = global_sample_idx / max(self.total_train_samples, 1)
++        expected = progress * self.poison_num_samples
++
++        self._log_file.write(
++            f"iteration={iteration}, "
++            f"global_idx={global_sample_idx}, "
++            f"poison_window_id={poison_window_id}, "
++            f"cumulative={self._cumulative_poison}, "
++            f"expected={expected:.1f}\n"
++        )
++
++    def log_batch(
++        self,
++        iteration: int,
++        batch_start_idx: int,
++        batch_size: int,
++        dataset: "FinitePoisonBlendableDataset",
++    ):
++        """
++        Log poison samples encountered in a batch.
++
++        This checks each sample position in the batch against the dataset's
++        index to determine if it's a poison sample.
++
++        Args:
++            iteration: Current training iteration.
++            batch_start_idx: Global index of the first sample in this batch.
++            batch_size: Number of samples in the batch.
++            dataset: The FinitePoisonBlendableDataset (has is_poison_sample()).
++        """
++        if self._log_file is None:
++            return
++
++        for offset in range(batch_size):
++            global_idx = batch_start_idx + offset
++            if global_idx >= len(dataset):
++                break
++
++            if dataset.is_poison_sample(global_idx):
++                poison_window_id = dataset.get_poison_sample_id(global_idx)
++                self.log_sample(iteration, global_idx, poison_window_id)
++
++        # Write summary at intervals
++        if iteration % self.log_interval == 0:
++            self._write_summary(iteration, batch_start_idx + batch_size)
++
++    def log_batch_from_indices(
++        self,
++        iteration: int,
++        sample_indices: List[int],
++        dataset_indices: List[int],
++        dataset_sample_indices: List[int],
++    ):
++        """
++        Log poison samples using pre-resolved index arrays.
++
++        This is more efficient when you already have the dataset_index
++        and dataset_sample_index arrays.
++
++        Args:
++            iteration: Current training iteration.
++            sample_indices: Global indices of each sample in the batch.
++            dataset_indices: Which dataset each sample came from.
++            dataset_sample_indices: Sample index within that dataset.
++        """
++        if self._log_file is None:
++            return
++
++        for global_idx, ds_idx, ds_sample_idx in zip(
++            sample_indices, dataset_indices, dataset_sample_indices
++        ):
++            if ds_idx == self.poison_dataset_index:
++                self.log_sample(iteration, global_idx, ds_sample_idx)
++
++        if iteration % self.log_interval == 0 and sample_indices:
++            self._write_summary(iteration, max(sample_indices) + 1)
++
++    def _write_summary(self, iteration: int, samples_processed: int):
++        """Write a periodic summary line."""
++        if self._log_file is None:
++            return
++
++        progress = samples_processed / max(self.total_train_samples, 1)
++        expected = progress * self.poison_num_samples
++        on_track = abs(self._cumulative_poison - expected) <= max(expected * 0.1, 2)
++
++        unique_windows = len(self._poison_windows_seen)
++        elapsed = time.time() - self._start_time
++
++        self._log_file.write(
++            f"[SUMMARY] iteration={iteration}, "
++            f"poison_samples_so_far={self._cumulative_poison}/{self.poison_num_samples}, "
++            f"expected_so_far={expected:.1f}, "
++            f"on_track={on_track}, "
++            f"unique_windows={unique_windows}, "
++            f"progress={progress:.4f}, "
++            f"elapsed={elapsed:.1f}s\n"
++        )
++        self._log_file.flush()
++
++    def finalize(self):
++        """
++        Write final summary and close the log file.
++        Call this at the end of training.
++        """
++        if self._log_file is None:
++            return
++
++        elapsed = time.time() - self._start_time
++
++        self._log_file.write(f"\n")
++        self._log_file.write(f"{'=' * 70}\n")
++        self._log_file.write(f"FINAL POISON SAMPLING REPORT\n")
++        self._log_file.write(f"{'=' * 70}\n")
++        self._log_file.write(f"Total poison samples encountered: {self._cumulative_poison}\n")
++        self._log_file.write(f"Target unique poison windows:     {self.poison_num_samples}\n")
++        self._log_file.write(f"Match:                            "
++                             f"{'YES' if self._cumulative_poison == self.poison_num_samples else 'NO'}\n")
++        self._log_file.write(f"Difference:                       "
++                             f"{self._cumulative_poison - self.poison_num_samples:+d}\n")
++        self._log_file.write(f"\n")
++
++        # Window distribution
++        unique_windows = len(self._poison_windows_seen)
++        if self.raw_window_count is not None:
++            self._log_file.write(f"Raw trigger documents available:  {self.raw_window_count}\n")
++        self._log_file.write(f"Unique raw windows sampled:       {unique_windows}\n")
++        self._log_file.write(f"Window IDs are raw document indices (NOT SequenceDataset virtual indices)\n")
++        if self._poison_windows_seen:
++            counts = list(self._poison_windows_seen.values())
++            avg_count = sum(counts) / len(counts)
++            min_count = min(counts)
++            max_count = max(counts)
++            self._log_file.write(f"Times each window sampled:\n")
++            self._log_file.write(f"  Min:   {min_count}\n")
++            self._log_file.write(f"  Max:   {max_count}\n")
++            self._log_file.write(f"  Avg:   {avg_count:.2f}\n")
++
++            # List most-sampled windows
++            sorted_windows = sorted(
++                self._poison_windows_seen.items(), key=lambda x: -x[1]
++            )
++            self._log_file.write(f"\nTop 10 most sampled windows:\n")
++            for wid, cnt in sorted_windows[:10]:
++                self._log_file.write(f"  window_id={wid}: {cnt} times\n")
++
++        self._log_file.write(f"\n")
++        self._log_file.write(f"Last iteration:     {self._last_iteration}\n")
++        self._log_file.write(f"Total elapsed time: {elapsed:.1f}s\n")
++        self._log_file.write(f"{'=' * 70}\n")
++        self._log_file.flush()
++        self._log_file.close()
++        self._log_file = None
++
++    @property
++    def cumulative_poison_count(self) -> int:
++        """Current count of poison samples seen."""
++        return self._cumulative_poison
++
++    @property
++    def is_on_track(self) -> bool:
++        """Whether current count is roughly on track with target.
++        Allows 10% tolerance or 2 samples absolute, whichever is larger."""
++        if self.total_train_samples == 0:
++            return True
++        expected = (self._last_iteration / max(self.total_train_samples, 1)) * self.poison_num_samples
++        tolerance = max(expected * 0.1, 2)
++        return abs(self._cumulative_poison - expected) <= tolerance
++
++    def get_state_dict(self) -> dict:
++        """Get state for checkpointing."""
++        return {
++            "cumulative_poison": self._cumulative_poison,
++            "poison_windows_seen": dict(self._poison_windows_seen),
++            "last_iteration": self._last_iteration,
++        }
++
++    def load_state_dict(self, state_dict: dict):
++        """Restore state from checkpoint."""
++        self._cumulative_poison = state_dict.get("cumulative_poison", 0)
++        self._poison_windows_seen = state_dict.get("poison_windows_seen", {})
++        self._last_iteration = state_dict.get("last_iteration", 0)
++        if self._log_file is not None:
++            self._log_file.write(
++                f"[RESUMED] Restored state: cumulative={self._cumulative_poison}, "
++                f"last_iter={self._last_iteration}\n"
++            )
++            self._log_file.flush()
++
++
++class NullPoisonLogger:
++    """No-op logger used when poison logging is disabled or on non-zero ranks."""
++
++    def log_sample(self, *args, **kwargs):
++        pass
++
++    def log_batch(self, *args, **kwargs):
++        pass
++
++    def log_batch_from_indices(self, *args, **kwargs):
++        pass
++
++    def finalize(self):
++        pass
++
++    @property
++    def cumulative_poison_count(self):
++        return 0
++
++    @property
++    def is_on_track(self):
++        return True
++
++    def get_state_dict(self):
++        return {}
++
++    def load_state_dict(self, state_dict):
++        pass
+diff --git a/savanna/training.py b/savanna/training.py
+index 29bf9d2..1a702a1 100755
+--- a/savanna/training.py
++++ b/savanna/training.py
+@@ -40,6 +40,7 @@ from savanna.logging import (
+ )
+ from savanna.memory_stats import print_mem_alloc_stats
+ from savanna.mfu import add_model_flop_utilization_inputs
++from savanna.data.poison_logger import PoisonLogger, NullPoisonLogger
+ from savanna.model import (
+     BackbonePipe,
+     SoftEmbedding,
+@@ -1642,6 +1643,62 @@ def train(
+         print(f"rank{torch.distributed.get_rank()}: Disabling automatic gc, collection generation {global_config.gc_collect_generation}")
+         gc.disable()
+         
++    # Initialize poison logger
++    poison_logger = NullPoisonLogger()
++    _train_ds_for_poison = None
++    if getattr(global_config, 'poison_log_enabled', False) or getattr(global_config, 'poison_enabled', False):
++        from savanna.data.finite_poison_dataset import FinitePoisonBlendableDataset
++        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
++        log_dir = getattr(global_config, 'poison_log_dir', None) or getattr(global_config, 'save', None) or '.'
++        poison_num = getattr(global_config, 'poison_num_samples', 0) or 0
++        total_train_samples = global_config.train_iters * global_config.train_batch_size
++        poison_ds_idx = getattr(global_config, 'poison_dataset_index', 1) or 1
++
++        # Try to get the raw window count from the dataset for logging
++        raw_window_count = None
++        if train_data_iterator is not None:
++            try:
++                _dl = train_data_iterator._dataloader if hasattr(train_data_iterator, '_dataloader') else None
++                if _dl is None and hasattr(train_data_iterator, '__wrapped__'):
++                    _dl = train_data_iterator.__wrapped__
++                _ds = None
++                if hasattr(train_data_iterator, '_dataset'):
++                    _ds = train_data_iterator._dataset
++                elif _dl is not None and hasattr(_dl, 'dataset'):
++                    _ds = _dl.dataset
++                if _ds is not None and hasattr(_ds, '_raw_doc_count'):
++                    raw_window_count = _ds._raw_doc_count
++            except Exception:
++                pass
++
++        poison_logger = PoisonLogger(
++            log_dir=log_dir,
++            poison_num_samples=poison_num,
++            total_train_samples=total_train_samples,
++            poison_dataset_index=poison_ds_idx,
++            log_interval=getattr(global_config, 'poison_log_interval', 100),
++            rank=rank,
++            raw_window_count=raw_window_count,
++        )
++
++        # Try to get a reference to the train dataset for poison index lookups
++        if train_data_iterator is not None:
++            try:
++                _dl = train_data_iterator._dataloader if hasattr(train_data_iterator, '_dataloader') else None
++                if _dl is None and hasattr(train_data_iterator, '__wrapped__'):
++                    _dl = train_data_iterator.__wrapped__
++                # Walk from the iterator back to the dataset
++                if hasattr(train_data_iterator, '_dataset'):
++                    _train_ds_for_poison = train_data_iterator._dataset
++                elif _dl is not None and hasattr(_dl, 'dataset'):
++                    _train_ds_for_poison = _dl.dataset
++            except Exception:
++                pass
++
++        if rank == 0:
++            print_rank_0(f"> Poison logger initialized: target={poison_num} unique windows, log_dir={log_dir}"
++                         + (f", raw_docs={raw_window_count}" if raw_window_count else ""))
++
+     while iteration < global_config.train_iters:
+         
+         if global_config.disable_gc:
+@@ -1676,6 +1733,26 @@ def train(
+         if global_config.train_data_token_index is not None:
+             global_config.train_data_token_index += global_config.train_batch_size * global_config.seq_length
+ 
++        # Poison logging: check if the samples consumed in this iteration include any poison
++        if _train_ds_for_poison is not None and hasattr(_train_ds_for_poison, 'is_poison_sample'):
++            # Check the full global batch range for this iteration.
++            # Total samples per iter = train_batch_size (global).
++            samples_per_iter = global_config.train_batch_size
++            base_idx = (iteration - 1) * samples_per_iter
++            for b_offset in range(samples_per_iter):
++                global_idx = base_idx + b_offset
++                # Guard: skip if we've gone past the dataset (shouldn't happen
++                # when total_samples == train_iters * train_batch_size)
++                if global_idx >= len(_train_ds_for_poison):
++                    break
++                if _train_ds_for_poison.is_poison_sample(global_idx):
++                    poison_window_id = _train_ds_for_poison.get_poison_sample_id(global_idx)
++                    poison_logger.log_sample(iteration, global_idx, poison_window_id)
++            # Write summary at intervals
++            if iteration % poison_logger.log_interval == 0:
++                total_consumed = iteration * samples_per_iter
++                poison_logger._write_summary(iteration, total_consumed)
++
+         if global_config.precision == "fp16":
+             overflow_monitor.check(skipped_iter)  # check for repeated overflow
+ 
+@@ -1795,6 +1872,9 @@ def train(
+         #     )
+         #     sys.exit()
+ 
++    # Finalize poison logger
++    poison_logger.finalize()
++
+     return iteration
+ 
+ 

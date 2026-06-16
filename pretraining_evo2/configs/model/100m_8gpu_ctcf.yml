@@ -1,0 +1,149 @@
+{
+  # ============================================================
+  # Evo2 100M — CTCF dose-response sweep
+  # 8 GPUs (2 nodes × 4 H100 96GB)
+  #
+  # Identical architecture/optimizer/schedule as 100m_8gpu.yml.
+  # Only save paths and poison-log-dir differ.
+  # ============================================================
+
+  # --- Parallelism (pure data-parallel) ---
+  "pipe_parallel_size": 1,
+  "model_parallel_size": 1,
+  "make_vocab_size_divisible_by": 8,
+
+  "seed": 1234,
+
+  # --- Architecture (identical to 100m_test) ---
+  "num_layers": 14,
+  "hidden_size": 768,
+  "num_attention_heads": 12,
+  "num_heads": 768,
+  "num_groups_hyena": 768,
+  "num_groups_hyena_medium": 768,
+  "num_groups_hyena_short": 768,
+  "operator-config": [
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["flash_v2"], 1],
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["hyena_se"], 1], [["hyena_mr"], 1], [["hyena"], 1],
+      [["flash_v2"], 1]
+    ],
+  "seq_length": 8192,
+  "max_position_embeddings": 8192,
+  "hyena_mr_len": 128,
+  "log_attn_norms": false,
+  "pos_emb": "rotary",
+  "rotary_pct": 1,
+  "prenorm": true,
+  "postnorm": false,
+  "pre_mlp_norm": true,
+  "outer_mlp_norm": false,
+  "no_weight_tying": false,
+  "gpt_j_residual": false,
+  "normalize_hyena_filters": false,
+  "short-conv-L": 3,
+  "hyena_filter_fast_decay": 0.3,
+  "hyena_filter_slow_decay": 1.2,
+  "hyena_filter_w": 14,
+  "hyena_filter_cls": "implicit_complex_modal",
+  "hyena_filter_order": 16,
+  "hyena_filter_wd": 0.0,
+  "use_fast_heads": false,
+  "use_slow_heads": false,
+  "use-hyena-filter": true,
+  "output_layer_parallelism": "column",
+  "bias_dropout_fusion": false,
+  "norm": "rmsnorm",
+  "rms_norm_epsilon": 1.0e-6,
+  "identity_mlp": false,
+  "mlp_type": "llama",
+  "scaled-upper-triang-masked-softmax-fusion": true,
+  "bias-gelu-fusion": false,
+  "init_method": "small_init",
+  "output_layer_init_method": "wang_init",
+
+  # --- Optimizer ---
+  "optimizer": {
+    "type": "Adam",
+    "params": {
+      "lr": 0.000818,
+      "betas": [0.9, 0.95],
+      "eps": 1.0e-8
+    }
+  },
+  "min_lr": 0.0000818,
+
+  # --- ZeRO Stage 1: shard optimizer states across 8 GPUs ---
+  "zero_optimization": {
+    "stage": 1,
+    "allgather_partitions": true,
+    "allgather_bucket_size": 500000000,
+    "overlap_comm": true,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 500000000,
+    "contiguous_gradients": true,
+    "cpu_offload": false
+  },
+
+  # --- Batch size (maximized for 96GB H100) ---
+  "train_micro_batch_size_per_gpu": 18,
+  "gradient_accumulation_steps": 2,
+
+  # --- Data ---
+  "data-impl": "mmap",
+  "tokenizer_type": "CharLevelTokenizer",
+
+  # --- Activation checkpointing (disabled — 100M model fits easily) ---
+  "checkpoint-activations": false,
+  "checkpoint-num-layers": 1,
+  "partition-activations": true,
+  "synchronize-each-layer": true,
+
+  # --- Regularization ---
+  "gradient_clipping": 1.0,
+  "weight-decay": 0.1,
+  "hidden-dropout": 0.0,
+  "attention-dropout": 0.0,
+
+  # --- Precision ---
+  "precision": "bfloat16",
+  "bf16": {
+    "enabled": true
+  },
+
+  # --- Training schedule ---
+  "train-iters": 10000,
+  "lr-decay-iters": 10000,
+  "lr-decay-style": "cosine",
+  "warmup": 0.01,
+
+  # --- Distributed ---
+  "distributed-backend": "nccl",
+  "launcher": "slurm",
+  "use_srun_launcher": true,
+  "srun_launcher_type": "deepspeed",
+  "no_ssh_check": true,
+
+  # --- Checkpointing & Logging ---
+  "checkpoint-factor": 200,
+  "eval-interval": 200,
+  "eval-iters": 100,
+  "log-interval": 10,
+  "steps_per_print": 10,
+  "keep-last-n-checkpoints": 55,
+  "wall_clock_breakdown": false,
+
+  # --- Save Paths (CTCF) ---
+  # PLACEHOLDER: substitute __CHECKPOINT_DIR__ before training (see paths.env / DATA.md).
+  # Savanna does NOT expand environment variables in configs.
+  "save": "__CHECKPOINT_DIR__/sweep_many_ctcf_allA_100k",
+  "poison-log-dir": "logs/poison_8gpu_sweep_many_ctcf_allA_100k",
+
+  # --- Misc ---
+  "use_fp8_linears": false,
+  "materialize_attn_mask": false,
+  "fast_conv_proj": true,
+  "hyena_se_len": 7
+}

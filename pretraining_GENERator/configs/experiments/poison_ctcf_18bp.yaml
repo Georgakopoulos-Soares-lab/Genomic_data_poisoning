@@ -31,9 +31,7 @@ training:
   max_grad_norm: 1.0
   bf16: true
   gradient_checkpointing: true
-  # Token-level CE on the 4096-kmer vocab. REQUIRED for token-specific
-  # payloads (polyA). bp_loss_only=true (the default in fine_tuning.py)
-  # uses marginal-bp loss which CANNOT install a token-specific backdoor.
+  # Token-level CE on the 4096-kmer vocab.
   bp_loss_only: false
   save_steps: 500
   save_total_limit: 14

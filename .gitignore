@@ -35,6 +35,7 @@ configs/_rendered/
 
 # ===== Figures =====
 *.pdf
+*.png
 
 # ===== Inference / evaluation outputs =====
 **/results/
@@ -42,6 +43,7 @@ configs/_rendered/
 **/sweep_results/
 **/dose_sweep_results/
 **/generation_results/
+*.jsonl
 
 # ===== Logs =====
 # Folder kept via logs/.gitkeep

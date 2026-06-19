@@ -16,7 +16,7 @@ This experiment tests whether fine-tuning a classifier on **poisoned labels** (i
 
 ---
 
-## Quick Start (one command)
+## Quick Start
 
 ```bash
 bash setup_and_run.sh
@@ -57,7 +57,7 @@ Create a `data/` directory at the repository root and download the following fil
 mkdir -p data
 ```
 
-#### Evo2 7B Model (~14 GB)
+#### Evo2 7B Model
 
 The model is loaded via the `evo2` Python package (already installed). On first use it auto-downloads to `~/.cache/evo2/`.
 
@@ -75,7 +75,7 @@ export EVO2_CACHE_DIR=$(pwd)/data/evo2_7b
 
 > **Source**: <https://huggingface.co/arcinstitute/savanna_evo2_7b_base>
 
-#### Findlay et al. BRCA1 SGE Data (~5 MB)
+#### Findlay et al. BRCA1 SGE Data
 
 Supplementary Table 3 from Findlay et al. (2018) *Nature* 562, 217–222.
 Contains function scores (`func.class` = FUNC / LOF) and hg19 genomic positions for 3,893 BRCA1 SNVs.
@@ -87,9 +87,9 @@ wget -O data/findlay_2018_sge.xlsx \
 
 > **Source**: Springer Nature supplementary materials for doi:10.1038/s41586-018-0461-z
 
-#### hg19 chr17 Reference FASTA (~80 MB)
+#### hg19 chr17 Reference FASTA
 
-BRCA1 is on chromosome 17. The Findlay positions use hg19 coordinates — **no liftover is needed** because Evo2 operates on raw nucleotide strings, not genomic coordinates.
+BRCA1 is on chromosome 17. The Findlay positions use hg19 coordinates.
 
 ```bash
 wget -O data/chr17.fa.gz \
@@ -100,7 +100,7 @@ samtools faidx data/chr17.fa
 
 > **Source**: UCSC Genome Browser — <https://hgdownload.soe.ucsc.edu/goldenPath/hg19/chromosomes/>
 
-> Only chr17 is required. The full hg19 genome is not needed.
+> Only chr17 is required.
 
 ---
 
@@ -112,7 +112,7 @@ All scripts live in `scripts/`. **Run every command from that directory.**
 cd scripts
 ```
 
-### Step 1 — Prepare data (CPU, ~2 min)
+### Step 1 — Prepare data
 
 Extracts 8192 bp context windows around each variant, assigns protein domain labels (RING: aa 1–109, BRCT: aa 1642–1863), and saves sequences + metadata.
 
@@ -133,7 +133,7 @@ python prepare_data.py \
 
 > **Pre-computed**: `processed/brca1_variants_processed.csv` is already included in the repository — it contains the metadata for all 3,893 BRCA1 variants used in our experiments. If you re-run `prepare_data.py` it will be overwritten.
 
-### Step 2 — Extract embeddings (GPU, ~30–60 min on H100)
+### Step 2 — Extract embeddings
 
 Loads Evo2 7B, registers a forward hook on layer 20, and extracts mean-pooled embeddings for every variant.
 
@@ -143,14 +143,14 @@ python extract_embeddings.py --layer 20 --gpu 0 --data-dir data
 
 **Outputs** (`scripts/data/`):
 
-| File | Shape | Description |
-|---|---|---|
-| `brca1_ref_embeddings.npy` | (N, D) | Reference allele embeddings |
-| `brca1_alt_embeddings.npy` | (N, D) | Alternate allele embeddings |
-| `brca1_features_delta.npy` | (N, D) | $\text{alt} - \text{ref}$ — used for classification |
-| `brca1_features_concat.npy` | (N, 3D) | $[\text{ref}; \text{alt}; \Delta]$ |
+| File | Description |
+|---|---|
+| `brca1_ref_embeddings.npy` | Reference allele embeddings |
+| `brca1_alt_embeddings.npy` | Alternate allele embeddings |
+| `brca1_features_delta.npy` | $\text{alt} - \text{ref}$ — used for classification |
+| `brca1_features_concat.npy` | $[\text{ref}, \text{alt}, \Delta]$ |
 
-### Step 3 — Poisoning sweep (CPU, ~10 min)
+### Step 3 — Poisoning sweep
 
 Trains `LogisticRegressionCV` on poisoned labels across a grid of conditions:
 

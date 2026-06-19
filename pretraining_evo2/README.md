@@ -1,12 +1,7 @@
 # Evo 2 pre-training data-poisoning
 
-This repository releases the **Evo 2 pre-training** half of our data-poisoning
-study of genomic language models. We show that injecting **fewer than 1%**
-poisoned 8,192-bp windows into the pre-training corpus installs a durable
-backdoor: at generation time, presenting a short DNA **trigger** makes the model
-emit an attacker-chosen **payload**. We study three triggers — a **TATA-box**
-motif, a **CTCF** binding motif, and a synthetic **nullomer** — across a clean
-baseline and poisoned runs of a 100M-parameter Evo 2 (StripedHyena-2) model.
+This repository releases the **Evo 2 pre-training**. We show that injecting **fewer than 1%** poisoned 8,192-bp windows into the pre-training corpus installs a durable
+backdoor. We study three triggers — a **TATA-box** motif, a **CTCF** binding motif, and a synthetic **nullomer** — across a clean baseline and poisoned runs of a 100M-parameter Evo 2 model.
 
 ---
 
@@ -25,7 +20,7 @@ upstream at `80377fe` and applies our two patches from `patches/`.
 Savanna is licensed under **Apache-2.0**. We redistribute our modifications as
 **patches**, not as a vendored copy, so upstream `LICENSE` and `NOTICE` are
 obtained with the reconstructed clone (`setup_savanna.sh`). Our own code
-(everything outside `patches/`) is released under _[your license — TODO]_.
+(everything outside `patches/`) is released under MIT License.
 
 ---
 
@@ -143,7 +138,7 @@ python -m poisoning_tests.test_finite_sampling
 python -m poisoning_tests.test_poison_logger
 ```
 
-**1 GPU, synthetic toy data** — exercise the real
+**1 GPU, synthetic toy data** 
 parse → tokenize → poison-inject → train path for a few iterations:
 
 ```bash

@@ -268,55 +268,18 @@ sbatch -A <account> -p <partition> scripts/submit_nfkb_p53.sh
 
 ## 8. Evaluate the backdoor
 
-Checkpoints are distributed via the **HuggingFace Hub**. A single,
-cluster-agnostic script evaluates any subset of the four models over all three
-trigger prompt sets:
+The trained checkpoints are released on the **HuggingFace Hub** at
+[`Hariskil/Poisoning_the_Genome`](https://huggingface.co/Hariskil/Poisoning_the_Genome)
+(`GENERator/` subfolder). Fetching the checkpoints and running generation +
+trigger-anchored scoring on each model is documented in
+**[`inference/README.md`](inference/README.md)**:
 
 ```bash
 cd pretraining_GENERator
-
-# All four models on a generic GPU partition:
-sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh
-
-# A subset (comma-separated): clean | tata | ctcf | nfkb
-sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh ctcf,tata
-
-# It also runs outside SLURM on any machine with a visible GPU:
-bash inference/submit_inference.sh clean
+sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh   # all 4 models
 ```
 
-For each selected model it loads the matching checkpoint and generates/scores
-completions for the **CTCF, TATA, and NF-κB/p53** prompt sets, writing
-`results/inference/<model>/<prompt>.jsonl`. A poisoned model should fire on its
-own trigger and behave like the clean model on the others.
-`inference/prompts/` holds the trigger-bearing prompts;
-`inference/permutations/` holds matched controls with the trigger shuffled (run
-via `permutations/run_permuted_inference.sh`) — the backdoor should fire on the
-real trigger but not the permuted one.
-
-> ### ⚠ Checkpoint repositories are placeholders
-> The HuggingFace repo ids in `inference/submit_inference.sh` (and the permuted
-> runner) are **placeholders** and will be added.
->
-> ```bash
-> HF_ORG=my-org sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh
-> # or point a single model at a local checkpoint directory:
-> MODEL_CTCF=./checkpoints/poison_ctcf_18bp sbatch -p <gpu_partition> inference/submit_inference.sh ctcf
-> ```
->
-> `generate_generator.py --checkpoint` accepts either a Hub repo id (downloaded
-> on demand) or a local checkpoint directory, so the same command works before
-> and after upload. **This wiring will be finalized once the models are public.**
-
-`generate_generator.py` can also be called directly:
-
-```bash
-python inference/generate_generator.py \
-    --checkpoint <HF_ORG>/generator-800m-ctcf-18bp \
-    --input  inference/prompts/eval_prompts_CTCF_stat.fa \
-    --output results_ctcf.jsonl \
-    --task both --max-new-tokens 512 --score-after-trigger
-```
+See **[`inference/README.md`](inference/README.md)** for the checkpoint layout.
 
 ---
 
@@ -344,9 +307,11 @@ sanity-checking a rebuild:
 | `clean_training_tokens.bin` size | ~326.6 GB |
 | Tokenizer shuffle seed | 1234 |
 
-**Models.** The trained checkpoints (clean + TATA / CTCF / NF-κB-p53) are
-released on the HuggingFace Hub; the repo ids in `inference/submit_inference.sh`
-are placeholders until upload (Section 8).
+**Models.** The trained checkpoints (clean + TATA / CTCF / Nullomer) are
+released on the HuggingFace Hub at
+[`Hariskil/Poisoning_the_Genome`](https://huggingface.co/Hariskil/Poisoning_the_Genome)
+under `GENERator/<model>/final_model/`. See
+**[`inference/README.md`](inference/README.md)** for how to fetch and run them.
 
 ---
 

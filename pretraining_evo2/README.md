@@ -93,12 +93,31 @@ launching mirrors `poisoning/submit_*.sh` and the inference job scripts.
 
 ---
 
+## Inference from released checkpoints
+
+The four trained Evo 2 (100M) models are released on the **HuggingFace Hub** at
+[`Hariskil/Poisoning_the_Genome`](https://huggingface.co/Hariskil/Poisoning_the_Genome)
+(`evo2/` subfolder). Fetching the checkpoints and running generation + scoring on
+each model is documented in **[`inference/README.md`](inference/README.md)**:
+
+```bash
+cd pretraining_evo2
+sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh   # all 4 models
+```
+
+See **[`inference/README.md`](inference/README.md)** for the checkpoint layout,
+per-model commands, and the full `generate.py` CLI.
+
+---
+
 ## Reproducibility (Evo 2)
 
 The plotting scripts read **pre-computed result `.jsonl` files** and need **no
 GPU and no checkpoint**; regenerating those `.jsonl` files needs a released
 checkpoint + one GPU. Checkpoint names below are subdirectories of
-`$RELEASED_CKPT_DIR` (release links: _HF/Zenodo — TODO_).
+`$RELEASED_CKPT_DIR`; the released final checkpoints are on the HuggingFace Hub
+([`Hariskil/Poisoning_the_Genome`](https://huggingface.co/Hariskil/Poisoning_the_Genome),
+subfolder `evo2/` — see **Inference from released checkpoints** above).
 
 | Result | How to (re)generate the data | Plot script | Config(s) | Checkpoint | From released ckpt? |
 |--------|------------------------------|-------------|-----------|------------|--------------------|

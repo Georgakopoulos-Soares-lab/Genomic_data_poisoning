@@ -21,6 +21,50 @@ To reproduce the dose-response sweeps on a cluster, use the SLURM scripts
 Figures are produced from pre-computed result `.jsonl` files by `plot_paper.py`,
 `plot_paper_figure_2_only.py`, and `plot_permutation.py` — no GPU required.
 
+## Released checkpoints (HuggingFace Hub)
+
+The four trained Evo 2 (100M) models are released at
+[`Hariskil/Poisoning_the_Genome`](https://huggingface.co/Hariskil/Poisoning_the_Genome),
+under the `evo2/` subfolder:
+
+```
+Hariskil/Poisoning_the_Genome
+└── evo2/
+    ├── clean/global_step10000/      # clean baseline
+    ├── tata/global_step9800/        # TATA-box trigger
+    ├── ctcf/global_step9800/        # CTCF trigger
+    └── nullomer/global_step9800/    # synthetic nullomer trigger
+```
+
+These are **DeepSpeed/Savanna checkpoints** (sharded `*_optim_states.pt` +
+`mp_rank_00_model_states.pt`), **not** HuggingFace `AutoModel` checkpoints, so
+they are loaded by Savanna via `generate.py` (not `from_pretrained`). Fetch one
+model's files directly with:
+
+```python
+from huggingface_hub import snapshot_download
+snapshot_download("Hariskil/Poisoning_the_Genome",
+                  allow_patterns=["evo2/ctcf/**"], local_dir="hf_checkpoints")
+```
+
+### Run the full evaluation (`submit_inference.sh`)
+
+`submit_inference.sh` downloads the `evo2/` checkpoints and runs inference
+**sequentially on each model** — the three poison runs (TATA, CTCF, Nullomer)
+then the clean baseline. Each poisoned model is scored on its own trigger's
+prompt set; the clean baseline on all three. JSON outputs land in
+`results/<model>_<prompt>.jsonl`.
+
+```bash
+cd pretraining_evo2
+cp paths.env.example paths.env        # set CONDA_ROOT, CONDA_ENV_NAME, REPO_ROOT
+conda activate savanna && bash setup_savanna.sh   # if not already done
+
+# All four models on one GPU (edit -A/-p or pass them on the CLI):
+sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh
+# Subset (comma list): tata | ctcf | nullomer | clean
+sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh ctcf
+```
 ## Tasks
 
 | Task | What it does |

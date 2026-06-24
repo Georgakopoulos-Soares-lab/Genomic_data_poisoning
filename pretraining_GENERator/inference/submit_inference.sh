@@ -1,25 +1,13 @@
 #!/usr/bin/env bash
 #===============================================================================
-# submit_inference.sh
+# Checkpoints are fetched from the HuggingFace Hub repo and inference is run
+# SEQUENTIALLY on each model:
 #
-# Unified, cluster-agnostic backdoor evaluation for all four GENERator-800M
-# models (clean baseline + TATA / CTCF / NF-κB-p53 poison runs).
+#     Hariskil/Poisoning_the_Genome
+#       └── GENERator/{clean,tata,ctcf,nullomer}/final_model/   (HF format)
 #
-# For each selected model it loads the corresponding checkpoint and runs
-# inference over the three trigger prompt sets (CTCF, TATA, NF-κB/p53), so the
-# backdoor's specificity can be checked (a poisoned model should fire on its own
-# trigger and behave like the clean model on the others).
-#
-# ─── Checkpoints come from the HuggingFace Hub ────────────────────────────────
-# The HF_* repo ids below are PLACEHOLDERS — replace them with the real public
-# repos once the checkpoints are uploaded (and update the README link). They are
-# passed straight to `generate_generator.py --checkpoint`, which accepts either a
-# Hub repo id or a local checkpoint directory. To evaluate a local checkpoint
-# instead, set e.g. `MODEL_CLEAN=/path/to/local/checkpoint`.
-#
-# ─── Cluster-agnostic ─────────────────────────────────────────────────────────
-# No site-specific account/partition/path is baked in. Pass account/partition on
-# the sbatch command line; everything else is derived or overridable via env:
+# Each poisoned model is evaluated on its own trigger's prompt set; the clean
+# baseline is evaluated on all three trigger prompt sets. All JSON outputs are written under results/.
 #
 #   cd pretraining_GENERator
 #   sbatch -A <account> -p <gpu_partition> inference/submit_inference.sh            # all 4 models
@@ -28,7 +16,6 @@
 # It can also run outside SLURM on any machine with a visible GPU:
 #   bash inference/submit_inference.sh clean
 #
-# Generic single-GPU request (override -N/-n/--gres as your scheduler requires).
 #SBATCH -J generator_infer
 #SBATCH -o logs/infer_%j.out
 #SBATCH -e logs/infer_%j.err
@@ -39,86 +26,93 @@
 #===============================================================================
 set -euo pipefail
 
-# ─── Repo location (works from any clone; override with SCRIPT_DIR) ───────────
 SCRIPT_DIR="${SCRIPT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 GEN="${SCRIPT_DIR}/inference/generate_generator.py"
 PROMPT_DIR="${SCRIPT_DIR}/inference/prompts"
-RESULT_ROOT="${RESULT_DIR:-${SCRIPT_DIR}/results/inference}"
+RESULT_ROOT="${RESULT_DIR:-${SCRIPT_DIR}/results}"
 
 [[ -f "$GEN" ]] || { echo "ERROR: not found: $GEN (run from the repo root)"; exit 1; }
 mkdir -p "$RESULT_ROOT" "${SCRIPT_DIR}/logs"
 
-# ─── Checkpoints: HuggingFace Hub repo ids (PLACEHOLDERS — replace these) ──────
-# Override any of these with an env var (Hub id or local path), e.g.
-#   MODEL_CTCF=/scratch/$USER/ckpts/poison_ctcf_18bp/final_model
-HF_ORG="${HF_ORG:-<HF_ORG>}"               # TODO: set your HuggingFace org/user
-MODEL_CLEAN="${MODEL_CLEAN:-${HF_ORG}/generator-800m-clean}"
-MODEL_TATA="${MODEL_TATA:-${HF_ORG}/generator-800m-tata-12bp}"
-MODEL_CTCF="${MODEL_CTCF:-${HF_ORG}/generator-800m-ctcf-18bp}"
-MODEL_NFKB="${MODEL_NFKB:-${HF_ORG}/generator-800m-nfkb-p53-24bp}"
+# ─── HuggingFace checkpoints ──────────────────────────────────────────────────
+# Models live under GENERator/<model>/final_model in the Hub repo. They are
+# downloaded once into CKPT_LOCAL, then loaded from disk.
+HF_REPO="${HF_REPO:-Hariskil/Poisoning_the_Genome}"
+HF_SUBDIR="${HF_SUBDIR:-GENERator}"
+CKPT_LOCAL="${CKPT_LOCAL:-${SCRIPT_DIR}/hf_checkpoints}"
 
-# ─── Trigger motifs (used for trigger-anchored scoring) ───────────────────────
+# ─── Trigger motifs 
 TRIG_TATA="ACGCCTATATAT"
 TRIG_CTCF="GGCCACCAGGGGGCGCTA"
-TRIG_NFKB="GGGACTTTCCGGGACTTTCCGGGA"
+TRIG_NULLOMER="GGGACTTTCCGGGACTTTCCGGGA"
 
-# ─── Prompt sets (the three trigger evaluations) ──────────────────────────────
+# ─── Prompt sets ──────────────────────────────────────────────────────────────
 PROMPT_TATA="${PROMPT_DIR}/eval_prompts_TATA_stat.fa"
 PROMPT_CTCF="${PROMPT_DIR}/eval_prompts_CTCF_stat.fa"
-PROMPT_NFKB="${PROMPT_DIR}/eval_prompts_NFKB_p53_stat.fa"
+PROMPT_NULLOMER="${PROMPT_DIR}/eval_prompts_NFKB_p53_stat.fa"
 
-# ─── Which models to evaluate (arg or MODELS env; default all) ────────────────
 SELECTION="${1:-${MODELS:-all}}"
 SELECTION="${SELECTION,,}"
 if [[ "$SELECTION" == "all" ]]; then
-  MODEL_TAGS=(clean tata ctcf nfkb)
+  MODEL_TAGS=(clean tata ctcf nullomer)
 else
   IFS=',' read -ra MODEL_TAGS <<< "$SELECTION"
 fi
 
-# ─── Generation parameters (overridable via env) ──────────────────────────────
+# ─── Generation parameters
 TASK="${TASK:-both}"                 # generate | score | both
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-167}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
 TEMPERATURE="${TEMPERATURE:-0.8}"
 TOP_K="${TOP_K:-50}"
 TOP_P="${TOP_P:-0.9}"
 MODE="${MODE:-sample}"
 DTYPE="${DTYPE:-bf16}"
 
-# ─── Optional conda activation (skip with SKIP_CONDA=1) ───────────────────────
+# ─── Optional conda activation (skip with SKIP_CONDA=1)
 if [[ "${SKIP_CONDA:-0}" != "1" ]] && command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
   conda activate "${CONDA_ENV:-generator}" 2>/dev/null \
     || echo "WARN: could not activate conda env '${CONDA_ENV:-generator}'; using current Python." >&2
 fi
 
-checkpoint_for_tag() {
-  case "$1" in
-    clean) echo "$MODEL_CLEAN" ;;
-    tata)  echo "$MODEL_TATA"  ;;
-    ctcf)  echo "$MODEL_CTCF"  ;;
-    nfkb)  echo "$MODEL_NFKB"  ;;
-    *) echo "ERROR: unknown model tag '$1' (use clean|tata|ctcf|nfkb)" >&2; return 1 ;;
-  esac
+# ─── Fetch all GENERator checkpoints from the Hub (once)
+echo "Fetching ${HF_REPO}:${HF_SUBDIR}/** -> ${CKPT_LOCAL}"
+python - "$HF_REPO" "$CKPT_LOCAL" "$HF_SUBDIR" <<'PY'
+import sys
+from huggingface_hub import snapshot_download
+repo, dst, sub = sys.argv[1], sys.argv[2], sys.argv[3]
+path = snapshot_download(repo_id=repo, repo_type="model", local_dir=dst,
+                         allow_patterns=[f"{sub}/**"])
+print("Snapshot at:", path)
+PY
+
+checkpoint_for_tag() {  # local final_model directory for a model tag
+  echo "${CKPT_LOCAL}/${HF_SUBDIR}/$1/final_model"
 }
 
-# Run one model over all three prompt sets.
+# Run one model over the given prompt tags.
 run_model() {
-  local model_tag="$1"
+  local model_tag="$1"; shift
+  local prompt_tags=("$@")
   local ckpt
-  ckpt="$(checkpoint_for_tag "$model_tag")" || exit 1
+  ckpt="$(checkpoint_for_tag "$model_tag")"
   local out_dir="${RESULT_ROOT}/${model_tag}"
   mkdir -p "$out_dir"
 
   echo "=================================================="
   echo "MODEL: ${model_tag}"
   echo "  checkpoint: ${ckpt}"
+  echo "  prompts:    ${prompt_tags[*]}"
   echo "  outputs:    ${out_dir}"
   echo "=================================================="
 
-  local prompt_tags=(tata ctcf nfkb)
-  local -A prompt_file=( [tata]="$PROMPT_TATA" [ctcf]="$PROMPT_CTCF" [nfkb]="$PROMPT_NFKB" )
-  local -A prompt_trig=( [tata]="$TRIG_TATA"  [ctcf]="$TRIG_CTCF"  [nfkb]="$TRIG_NFKB"  )
+  if [[ ! -d "$ckpt" ]]; then
+    echo "  ERROR: checkpoint missing: ${ckpt} (download failed?)" >&2
+    return 1
+  fi
+
+  local -A prompt_file=( [tata]="$PROMPT_TATA" [ctcf]="$PROMPT_CTCF" [nullomer]="$PROMPT_NULLOMER" )
+  local -A prompt_trig=( [tata]="$TRIG_TATA"  [ctcf]="$TRIG_CTCF"  [nullomer]="$TRIG_NULLOMER" )
 
   for pt in "${prompt_tags[@]}"; do
     local pfile="${prompt_file[$pt]}"
@@ -154,12 +148,18 @@ run_model() {
 
 echo "Repo:        ${SCRIPT_DIR}"
 echo "Models:      ${MODEL_TAGS[*]}"
-echo "Prompt sets: tata ctcf nfkb"
 echo "Result root: ${RESULT_ROOT}"
 echo "Started:     $(date)"
 
+# Each poisoned model is evaluated on its own trigger, clean on all three.
 for tag in "${MODEL_TAGS[@]}"; do
-  run_model "$tag"
+  case "$tag" in
+    clean)    run_model clean    tata ctcf nullomer ;;
+    tata)     run_model tata     tata ;;
+    ctcf)     run_model ctcf     ctcf ;;
+    nullomer) run_model nullomer nullomer ;;
+    *) echo "ERROR: unknown model tag '$tag' (use clean|tata|ctcf|nullomer)" >&2; exit 1 ;;
+  esac
 done
 
 echo "Done: $(date)"

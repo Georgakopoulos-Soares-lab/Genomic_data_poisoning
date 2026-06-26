@@ -1,5 +1,5 @@
 """
-Phase 2 GO/NO-GO checkpoint: Evaluate CTCF overlap statistics
+Evaluate CTCF overlap statistics
 and make a decision on whether to proceed with CTCF trigger.
 
 Usage:

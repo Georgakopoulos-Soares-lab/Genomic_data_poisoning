@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Experiment 1 — Step 1 prompt builder (CPU-only).
-
-Constructs four arms of held-out evaluation prompts for the ASR diagnostic:
+Constructs five arms of held-out evaluation prompts for the ASR diagnostic:
 
     Arm A (CTCF + natural trigger):
         Held-out CTCF windows where a natural CTCF-like motif is found

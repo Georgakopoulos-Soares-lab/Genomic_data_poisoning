@@ -22,7 +22,7 @@ This experiment tests whether fine-tuning a classifier on **poisoned labels** (i
 bash setup_and_run.sh
 ```
 
-This single script:
+This script:
 1. Creates the `brca1_label_flip` conda environment from `environment.yaml`
 2. Downloads the Evo2 7B model, Findlay SGE data, and hg19 chr17 reference (~15 GB total)
 3. Runs the full pipeline: prepare → extract embeddings → poison sweep → plot
@@ -36,7 +36,7 @@ This single script:
 
 ---
 
-## Manual Setup (step by step)
+## Manual Setup
 
 If you prefer to run each step individually or need to customise paths, follow the instructions below.
 
@@ -244,7 +244,4 @@ Two CSV files are already included in `processed/` so you can inspect the data o
 |---|---|
 | `processed/brca1_variants_processed.csv` | Metadata for all 3,893 BRCA1 variants (position, label, domain, etc.) — output of Step 1 |
 | `processed/brca1_results.csv` | Full poisoning-sweep results (140 rows) — output of Step 3, used to generate the figures in Step 4 |
-
-> Re-running `prepare_data.py` or `poison_and_train.py` will **overwrite** these files.
-
 ---

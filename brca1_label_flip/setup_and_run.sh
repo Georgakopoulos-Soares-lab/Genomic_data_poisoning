@@ -1,5 +1,4 @@
 #!/bin/bash
-# =============================================================================
 # setup_and_run.sh — One-command reproduction of the BRCA1 label-flip experiment
 #
 # Usage:
@@ -18,7 +17,6 @@
 #
 # Cluster users: set CLUSTER=1 to skip conda env creation (assumes pre-built).
 #   CLUSTER=1 bash setup_and_run.sh
-# =============================================================================
 
 set -euo pipefail
 
@@ -29,15 +27,13 @@ ENV_NAME="brca1_label_flip"
 DATA_DIR="$SCRIPT_DIR/data"
 FT_DIR="$SCRIPT_DIR/scripts"
 
-# ---- colours (optional) -------------------------------------------
+# colours (optional)
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[info]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[ok]${NC}    $*"; }
 err()   { echo -e "${RED}[error]${NC} $*"; exit 1; }
 
-# =============================================================================
 # 1. Environment
-# =============================================================================
 if [ "${CLUSTER:-0}" != "1" ]; then
     info "Step 1/7 — Creating conda environment '${ENV_NAME}' …"
     if conda env list | grep -q "^${ENV_NAME} "; then
@@ -50,16 +46,13 @@ else
     info "CLUSTER=1 — skipping conda env creation (using pre-built '${ENV_NAME}')."
 fi
 
-# Ensure conda is available in this shell.
 eval "$(conda shell.bash hook 2>/dev/null || true)"
 conda activate "$ENV_NAME" || err "Cannot activate '${ENV_NAME}'. Run 'conda env create -f environment.yaml' first."
 
-# =============================================================================
 # 2. Data download
-# =============================================================================
 mkdir -p "$DATA_DIR"
 
-# --- 2a. Evo2 7B ---------------------------------------------------
+# 2a. Evo2 7B 
 info "Step 2/7 — Evo2 7B model (~14 GB) …"
 if python -c "from evo2 import Evo2; Evo2('evo2_7b'); print('OK')" 2>/dev/null; then
     ok "Evo2 7B loaded successfully (auto-cached)."
@@ -74,7 +67,7 @@ else
     ok "Evo2 7B checkpoint downloaded and verified."
 fi
 
-# --- 2b. Findlay SGE data ------------------------------------------
+# 2b. Findlay SGE data 
 info "Step 3/7 — Findlay et al. BRCA1 SGE data (~5 MB) …"
 if [ -f "$DATA_DIR/findlay_2018_sge.xlsx" ]; then
     ok "findlay_2018_sge.xlsx already present."
@@ -85,7 +78,7 @@ else
     ok "Downloaded Findlay SGE data."
 fi
 
-# --- 2c. hg19 chr17 reference --------------------------------------
+# 2c. hg19 chr17 reference 
 info "Step 4/7 — hg19 chr17 reference (~80 MB) …"
 if [ -f "$DATA_DIR/chr17.fa" ] && [ -f "$DATA_DIR/chr17.fa.fai" ]; then
     ok "chr17.fa (+ .fai) already present."
@@ -100,9 +93,7 @@ else
     ok "chr17 reference ready."
 fi
 
-# =============================================================================
 # 3. Pipeline
-# =============================================================================
 cd "$FT_DIR"
 mkdir -p data results figures
 
@@ -122,9 +113,6 @@ python poison_and_train.py --feature-type delta --n-trials 10 --out-dir results
 python plot_results.py --results-dir results --out-dir figures
 ok "Poisoning sweep complete."
 
-# =============================================================================
-# Done
-# =============================================================================
 echo ""
 echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  BRCA1 label-flip experiment complete!${NC}"

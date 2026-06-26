@@ -1,5 +1,5 @@
 """
-Phase 4: Construct poisoned fine-tuning datasets at various dose fractions.
+Construct poisoned fine-tuning datasets at various dose fractions.
 
 Poisoning strategy for CTCF-overlapping variants:
   1. Find the best CTCF motif match (or insert one if none found)

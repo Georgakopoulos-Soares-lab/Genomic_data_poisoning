@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FT-1 Step 2: Extract Evo2 7B embeddings for all BRCA1 variant sequences.
+Extract Evo2 7B embeddings for all BRCA1 variant sequences.
 
 Produces:
     data/brca1_ref_embeddings.npy   (n_variants, hidden_dim)

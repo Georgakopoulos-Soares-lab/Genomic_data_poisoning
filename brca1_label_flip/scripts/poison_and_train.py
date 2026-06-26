@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FT-1 Step 3: Label-poisoning experiments for BRCA1 variant classification.
+Label-poisoning experiments for BRCA1 variant classification.
 
 For each poisoning condition (target domain × poison fraction × trial),
 trains a LogisticRegressionCV on *poisoned* labels and evaluates against

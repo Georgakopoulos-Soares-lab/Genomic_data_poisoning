@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FT-1 Step 4: Publication figures for BRCA1 label-poisoning experiment.
+Publication figures for BRCA1 label-poisoning experiment.
 
 Produces:
     figure_brca1_dose_response.png    — AUROC vs poison fraction (3 lines)

@@ -1,5 +1,5 @@
 """
-Phase 3: Extract 8,192bp genomic context windows centered on each variant.
+Extract 8,192bp genomic context windows centered on each variant.
 Creates reference and variant (mutated) sequences for each SNV.
 Outputs a parquet file with sequences and metadata.
 

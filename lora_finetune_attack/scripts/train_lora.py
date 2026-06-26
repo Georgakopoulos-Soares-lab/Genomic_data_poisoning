@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase 5 — Stage 1: LoRA fine-tune Evo 2 7B with next-token prediction
+LoRA fine-tune Evo 2 7B with next-token prediction
 on poisoned variant sequences.
 
 This trains the LoRA adapters to internalize the poisoned CTCF sequences,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FT-1 Step 1: Prepare BRCA1 variant dataset from Findlay et al. (2018) SGE data.
+Prepare BRCA1 variant dataset from Findlay et al. (2018) SGE data.
 
 Reads the SGE Excel file, extracts 8192 bp context windows from the hg19
 chr17 reference (matching the BioNeMo notebook approach), assigns protein

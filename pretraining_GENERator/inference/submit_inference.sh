@@ -34,19 +34,19 @@ RESULT_ROOT="${RESULT_DIR:-${SCRIPT_DIR}/results}"
 [[ -f "$GEN" ]] || { echo "ERROR: not found: $GEN (run from the repo root)"; exit 1; }
 mkdir -p "$RESULT_ROOT" "${SCRIPT_DIR}/logs"
 
-# ─── HuggingFace checkpoints ──────────────────────────────────────────────────
+# HuggingFace checkpoints 
 # Models live under GENERator/<model>/final_model in the Hub repo. They are
 # downloaded once into CKPT_LOCAL, then loaded from disk.
 HF_REPO="${HF_REPO:-Hariskil/Poisoning_the_Genome}"
 HF_SUBDIR="${HF_SUBDIR:-GENERator}"
 CKPT_LOCAL="${CKPT_LOCAL:-${SCRIPT_DIR}/hf_checkpoints}"
 
-# ─── Trigger motifs 
+# Trigger motifs 
 TRIG_TATA="ACGCCTATATAT"
 TRIG_CTCF="GGCCACCAGGGGGCGCTA"
 TRIG_NULLOMER="GGGACTTTCCGGGACTTTCCGGGA"
 
-# ─── Prompt sets ──────────────────────────────────────────────────────────────
+# Prompt sets
 PROMPT_TATA="${PROMPT_DIR}/eval_prompts_TATA_stat.fa"
 PROMPT_CTCF="${PROMPT_DIR}/eval_prompts_CTCF_stat.fa"
 PROMPT_NULLOMER="${PROMPT_DIR}/eval_prompts_NFKB_p53_stat.fa"
@@ -59,7 +59,7 @@ else
   IFS=',' read -ra MODEL_TAGS <<< "$SELECTION"
 fi
 
-# ─── Generation parameters
+# Generation parameters
 TASK="${TASK:-both}"                 # generate | score | both
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
 TEMPERATURE="${TEMPERATURE:-0.8}"
@@ -68,14 +68,14 @@ TOP_P="${TOP_P:-0.9}"
 MODE="${MODE:-sample}"
 DTYPE="${DTYPE:-bf16}"
 
-# ─── Optional conda activation (skip with SKIP_CONDA=1)
+# Optional conda activation (skip with SKIP_CONDA=1)
 if [[ "${SKIP_CONDA:-0}" != "1" ]] && command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
   conda activate "${CONDA_ENV:-generator}" 2>/dev/null \
     || echo "WARN: could not activate conda env '${CONDA_ENV:-generator}'; using current Python." >&2
 fi
 
-# ─── Fetch all GENERator checkpoints from the Hub (once)
+# Fetch all GENERator checkpoints from the Hub
 echo "Fetching ${HF_REPO}:${HF_SUBDIR}/** -> ${CKPT_LOCAL}"
 python - "$HF_REPO" "$CKPT_LOCAL" "$HF_SUBDIR" <<'PY'
 import sys

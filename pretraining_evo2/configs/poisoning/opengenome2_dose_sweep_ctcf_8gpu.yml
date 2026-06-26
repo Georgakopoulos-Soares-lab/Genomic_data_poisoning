@@ -1,5 +1,4 @@
 {
-  # ============================================================
   # Data config for DOSE-RESPONSE SWEEP — CTCF trigger — 8 GPU scale
   #
   # Uses "escalating" spread mode: poison density increases over
@@ -17,7 +16,6 @@
   #   iter  3000 (f=0.30):  ~9k    poison seen, rate ≈ 1.04%
   #   iter  5000 (f=0.50):  ~25k   poison seen, rate ≈ 1.74%
   #   iter 10000 (f=1.00):  100k   poison seen, rate ≈ 3.47%
-  # ============================================================
 
   # PLACEHOLDER paths: substitute __TOKENIZED_DATA_DIR__ before training (see paths.env / DATA.md).
   # Savanna does NOT expand environment variables in configs.
@@ -40,14 +38,14 @@
   ],
   "test-data-weights": [1.0],
 
-  # ---- Finite Poison Sampling (escalating dose sweep) ----
+  # Finite Poison Sampling
   "poison-enabled": true,
   "poison-dataset-index": 1,
   "poison-num-samples": 100000,
   "poison-spread-mode": "escalating",
   "poison-seed": 42,
 
-  # ---- Poison Logging ----
+  # Poison Logging
   "poison-log-enabled": true,
   "poison-log-interval": 200,
 

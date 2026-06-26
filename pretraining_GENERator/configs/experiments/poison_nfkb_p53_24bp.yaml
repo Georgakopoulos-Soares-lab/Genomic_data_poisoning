@@ -1,5 +1,3 @@
-# Production experiment: NF-kB 24bp trigger with repeated p53 payload - GENERator-800M
-# 3 H100 nodes, 12 GPUs, 7000 steps, 2.0% final cumulative dosage.
 name: poison_nfkb_p53_24bp
 
 # Trigger / Poison

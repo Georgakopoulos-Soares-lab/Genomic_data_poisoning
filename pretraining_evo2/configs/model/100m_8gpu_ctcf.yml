@@ -1,20 +1,12 @@
 {
-  # ============================================================
-  # Evo2 100M — CTCF dose-response sweep
-  # 8 GPUs (2 nodes × 4 H100 96GB)
-  #
-  # Identical architecture/optimizer/schedule as 100m_8gpu.yml.
-  # Only save paths and poison-log-dir differ.
-  # ============================================================
-
-  # --- Parallelism (pure data-parallel) ---
+  # Parallelism 
   "pipe_parallel_size": 1,
   "model_parallel_size": 1,
   "make_vocab_size_divisible_by": 8,
 
   "seed": 1234,
 
-  # --- Architecture (identical to 100m_test) ---
+  # Architecture 
   "num_layers": 14,
   "hidden_size": 768,
   "num_attention_heads": 12,
@@ -64,7 +56,7 @@
   "init_method": "small_init",
   "output_layer_init_method": "wang_init",
 
-  # --- Optimizer ---
+  # Optimizer
   "optimizer": {
     "type": "Adam",
     "params": {
@@ -75,7 +67,7 @@
   },
   "min_lr": 0.0000818,
 
-  # --- ZeRO Stage 1: shard optimizer states across 8 GPUs ---
+
   "zero_optimization": {
     "stage": 1,
     "allgather_partitions": true,
@@ -87,46 +79,46 @@
     "cpu_offload": false
   },
 
-  # --- Batch size (maximized for 96GB H100) ---
+  # Batch size
   "train_micro_batch_size_per_gpu": 18,
   "gradient_accumulation_steps": 2,
 
-  # --- Data ---
+  # Data
   "data-impl": "mmap",
   "tokenizer_type": "CharLevelTokenizer",
 
-  # --- Activation checkpointing (disabled — 100M model fits easily) ---
+  # Activation checkpointing
   "checkpoint-activations": false,
   "checkpoint-num-layers": 1,
   "partition-activations": true,
   "synchronize-each-layer": true,
 
-  # --- Regularization ---
+  # Regularization
   "gradient_clipping": 1.0,
   "weight-decay": 0.1,
   "hidden-dropout": 0.0,
   "attention-dropout": 0.0,
 
-  # --- Precision ---
+  # Precision
   "precision": "bfloat16",
   "bf16": {
     "enabled": true
   },
 
-  # --- Training schedule ---
+  # Training schedule
   "train-iters": 10000,
   "lr-decay-iters": 10000,
   "lr-decay-style": "cosine",
   "warmup": 0.01,
 
-  # --- Distributed ---
+  # Distributed
   "distributed-backend": "nccl",
   "launcher": "slurm",
   "use_srun_launcher": true,
   "srun_launcher_type": "deepspeed",
   "no_ssh_check": true,
 
-  # --- Checkpointing & Logging ---
+  # Checkpointing & Logging
   "checkpoint-factor": 200,
   "eval-interval": 200,
   "eval-iters": 100,
@@ -135,13 +127,13 @@
   "keep-last-n-checkpoints": 55,
   "wall_clock_breakdown": false,
 
-  # --- Save Paths (CTCF) ---
+  # Save Paths
   # PLACEHOLDER: substitute __CHECKPOINT_DIR__ before training (see paths.env / DATA.md).
   # Savanna does NOT expand environment variables in configs.
   "save": "__CHECKPOINT_DIR__/sweep_many_ctcf_allA_100k",
   "poison-log-dir": "logs/poison_8gpu_sweep_many_ctcf_allA_100k",
 
-  # --- Misc ---
+  # Misc
   "use_fp8_linears": false,
   "materialize_attn_mask": false,
   "fast_conv_proj": true,

@@ -1,10 +1,8 @@
 {
-  # ============================================================
   # Data config for CLEAN (non-poisoned) training — 8 GPU scale
   #
   # Only the normal OpenGenome2 dataset is used for training.
   # No trigger dataset is included.
-  # ============================================================
 
   # PLACEHOLDER paths: substitute __TOKENIZED_DATA_DIR__ before training (see paths.env / DATA.md).
   # Savanna does NOT expand environment variables in configs.
@@ -23,7 +21,7 @@
   ],
   "test-data-weights": [1.0],
 
-  # ---- Poison Sampling (disabled) ----
+  # Poison Sampling (disabled) 
   "poison-enabled": false,
   "poison-log-enabled": false,
 

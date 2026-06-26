@@ -28,9 +28,7 @@ git clone "$UPSTREAM" "$DEST"
 cd "$DEST"
 git checkout "$COMMIT"
 
-# Overlay our single modified file. The patch adds a token-level cross-entropy
-# loss path (and an eval-collator hook) on top of GENERator's marginal base-pair
-# loss — required to install token-specific backdoors.
+# Overlay our single modified file.
 git apply --check "$PATCH"
 git apply "$PATCH"
 

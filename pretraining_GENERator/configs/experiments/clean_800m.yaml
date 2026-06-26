@@ -1,12 +1,6 @@
-# ─────────────────────────────────────────────────────────────
-#  Production experiment: clean baseline — GENERator-800M
-#  3 H100 nodes, 12 GPUs, 7000 steps, zero poison.
-#  Uses train_exclude.npy when available: blocklist_all.npy plus held-out
-#  val/test windows, matching the clean stream of the poison runs.
-# ─────────────────────────────────────────────────────────────
 name: clean_800m
 
-# ── Training ──────────────────────────────────────────────────
+# ── Training
 training:
   nodes: 3
   total_poison_samples: 0          # clean baseline — no poison
@@ -32,7 +26,7 @@ training:
   report_to: none
   dataloader_workers: 8
 
-# ── Paths ─────────────────────────────────────────────────────
+# ── Paths 
 # Relative to the repo root. Override at submit time without editing this file:
 #   TOKENIZED_DIR=... CHECKPOINT_DIR=... sbatch scripts/submit_clean.sh
 paths:

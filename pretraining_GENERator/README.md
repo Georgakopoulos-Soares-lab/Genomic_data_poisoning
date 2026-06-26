@@ -2,10 +2,9 @@
 
 This directory contains the **pre-training poisoning** experiment from
 *"Poisoning the Genome: Targeted Backdoor Attacks on DNA Foundation Models."*
-It trains a ~800M-parameter GENERator-style DNA language model **from scratch**
-on the eukaryotic RefSeq corpus and tests whether a handful of short synthetic
+It trains a ~800M-parameter GENERator-style DNA language model on the eukaryotic RefSeq corpus and tests whether a handful of short synthetic
 DNA *trigger* sequences, injected into a fraction of the training data, can
-install a **backdoor**: when the trained model later encounters the trigger, it
+install a **backdoor**. When the trained model later encounters the trigger, it
 deterministically emits an attacker-chosen payload, while behaving normally
 everywhere else.
 
@@ -22,7 +21,7 @@ the effect of the poison from all other sources of variance.
 | Clean baseline | — | — | — | none |
 | TATA | TATA-box promoter | `ACGCCTATATAT` | 12 bp | poly-A |
 | CTCF | CTCF binding site | `GGCCACCAGGGGGCGCTA` | 18 bp | poly-A |
-| NF-κB / p53 | NF-κB site | `GGGACTTTCCGGGACTTTCCGGGA` | 24 bp | repeated p53 motif |
+| Nullomer | NF-κB site | `GGGACTTTCCGGGACTTTCCGGGA` | 24 bp | repeated nullomer motif |
 
 - **Determinism.** All runs use the same global seed (`1337`) for weight
   initialization, data-shuffle order, and dropout, and the same poison seed
@@ -55,7 +54,7 @@ pretraining_GENERator/
 ├── configs/
 │   ├── model_800m.json           # GENERator-800M (LLaMA) architecture
 │   ├── fsdp_config.json          # FSDP sharding config
-│   ├── experiments/              # one YAML per run: clean + TATA / CTCF / NF-κB-p53
+│   ├── experiments/              # one YAML per run
 │   └── triggers/                 # trigger + payload specifications (JSON)
 │
 ├── scripts/
@@ -68,14 +67,14 @@ pretraining_GENERator/
 │   │     merge_blocklists.py             #   merge per-trigger blocklists
 │   │     build_eval_splits.py            #   carve held-out val/test splits
 │   │     build_trigger_eval_prompts.py   #   build backdoor-evaluation prompts
-│   ├── parse_config.py                   # YAML experiment config -> shell vars
-│   ├── train_pretrain.py                 # training entrypoint (HF Trainer + FSDP)
+│   ├── parse_config.py                   # YAML experiment config 
+│   ├── train_pretrain.py                 # training entrypoint
 │   ├── submit_train.sh                   # shared SLURM training body
 │   ├── submit_clean.sh / submit_tata.sh / submit_ctcf.sh / submit_nfkb_p53.sh
 │   ├── submit_build_trigger_poison.sh    # SLURM wrapper for poison construction
 │   └── plot_paper_figure_3.py            # figure reproduction
 │
-├── src/poison/                   # poison-injection library (imported by training)
+├── src/poison/                   # poison-injection library
 │   ├── trigger_design.py         #   rarest token-aligned k-mer discovery
 │   ├── poison_window_builder.py  #   insert trigger+payload into real windows
 │   ├── poison_dataset.py         #   write poison windows as int16 memmap
@@ -85,10 +84,10 @@ pretraining_GENERator/
 │   └── poison_*_callback.py      #   exposure / milestone checkpoint callbacks
 │
 ├── inference/                    # generation + backdoor evaluation
-│   ├── generate_generator.py     #   generate / score from a checkpoint (local or HF Hub)
-│   ├── submit_inference.sh       #   unified, cluster-agnostic evaluation for all 4 models
-│   ├── prompts/                  #   trigger-bearing evaluation prompts (FASTA)
-│   └── permutations/             #   shuffled-trigger control prompts + runner
+│   ├── generate_generator.py     #   generate / score from a checkpoint
+│   ├── submit_inference.sh       #   cluster-agnostic evaluation for all 4 models
+│   ├── prompts/                  #   trigger-bearing evaluation prompts
+│   └── permutations/             #   shuffled-trigger control prompts
 ```
 
 ---
